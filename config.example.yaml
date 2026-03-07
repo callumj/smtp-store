@@ -1,0 +1,13 @@
+listen_addr: 127.0.0.1:2525
+storage_root: ./data
+hostname: localhost
+verbose_logs: false
+
+tls:
+  enabled: false
+  cert_file: ./certs/server.crt
+  key_file: ./certs/server.key
+
+users:
+  - username: camera
+    password: change-me
