@@ -37,3 +37,34 @@ Artifacts are written to `dist/` as `smtp-store_<os>_<arch>.tar.gz`.
 ```bash
 make test
 ```
+
+## systemd (Linux)
+
+An example unit file is included at `deploy/systemd/smtp-store.service`.
+
+Example install steps:
+
+```bash
+# build and install binary
+make build
+sudo install -m 0755 bin/smtp-store /usr/local/bin/smtp-store
+
+# create service user and directories
+sudo useradd --system --home /var/lib/smtp-store --shell /usr/sbin/nologin smtp-store || true
+sudo mkdir -p /etc/smtp-store /var/lib/smtp-store
+sudo cp config.example.yaml /etc/smtp-store/config.yaml
+sudo chown -R smtp-store:smtp-store /var/lib/smtp-store
+sudo chmod 0750 /var/lib/smtp-store
+
+# install unit and start
+sudo cp deploy/systemd/smtp-store.service /etc/systemd/system/smtp-store.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now smtp-store
+sudo systemctl status smtp-store
+```
+
+Logs:
+
+```bash
+journalctl -u smtp-store -f
+```

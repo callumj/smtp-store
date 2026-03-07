@@ -28,6 +28,6 @@ cross-build: clean-dist
 		mkdir -p "$${outdir}"; \
 		echo "Building $${os}/$${arch}"; \
 		GOOS=$${os} GOARCH=$${arch} CGO_ENABLED=0 go build -trimpath -o "$${outdir}/$(BINARY)" $(CMD); \
-		cp config.yaml "$${outdir}/config.yaml"; \
+		cp config.example.yaml "$${outdir}/config.yaml"; \
 		tar -C "$${outdir}" -czf "$(DIST)/$(BINARY)_$${os}_$${arch}.tar.gz" $(BINARY) config.yaml; \
 	done

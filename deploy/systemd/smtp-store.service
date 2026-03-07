@@ -1,0 +1,22 @@
+[Unit]
+Description=SMTP Store (local SMTP capture service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=smtp-store
+Group=smtp-store
+WorkingDirectory=/var/lib/smtp-store
+ExecStart=/usr/local/bin/smtp-store -config /etc/smtp-store/config.yaml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/smtp-store
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
