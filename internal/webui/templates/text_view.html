@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>{{.Name}}</h1>
+      <p class="muted">{{.Relative}} • {{.Modified}}</p>
+    </div>
+    <div class="topbar-actions">
+      <span class="pill">{{.CurrentUser}}</span>
+      <a class="btn" href="/browse/">Browse</a>
+      <a class="btn" href="{{.DownloadURL}}">Download</a>
+    </div>
+  </header>
+
+  <main class="page-grid single">
+    <section class="glass-card">
+      <h2>Body</h2>
+      <pre class="body-preview">{{.Content}}</pre>
+    </section>
+  </main>
+</body>
+</html>

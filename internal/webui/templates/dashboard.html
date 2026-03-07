@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>SMTP Store</h1>
+      <p class="muted">Storage root: <code>{{.StorageRoot}}</code></p>
+    </div>
+    <div class="topbar-actions">
+      <span class="pill">{{.CurrentUser}}</span>
+      <form method="post" action="/logout">
+        <button class="btn" type="submit">Log out</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page-grid">
+    <section class="glass-card">
+      <h2>Recipients</h2>
+      {{if .Recipients}}
+      <ul class="link-list recipients-grid">
+        {{range .Recipients}}
+          <li><a href="{{.BrowseURL}}">{{.Name}}</a></li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p class="muted">No recipient folders found yet.</p>
+      {{end}}
+    </section>
+
+    <section class="glass-card">
+      <div class="row-between">
+        <h2>Recent Files</h2>
+        <a class="btn" href="/browse/">Open full browser</a>
+      </div>
+      {{if .Recent}}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Recipient</th>
+              <th>Size</th>
+              <th>Modified</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Recent}}
+            <tr>
+              <td><code>{{.Name}}</code></td>
+              <td>{{.Recipient}}</td>
+              <td>{{.Size}}</td>
+              <td>{{.Modified}}</td>
+              <td class="actions">
+                <a href="{{.ViewURL}}">View</a>
+                <a href="{{.DownloadURL}}">Download</a>
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <p class="muted">No files captured yet.</p>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>

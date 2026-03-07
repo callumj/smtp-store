@@ -3,6 +3,11 @@ storage_root: ./data
 hostname: localhost
 verbose_logs: false
 
+web:
+  listen_addr: 0.0.0.0:8080
+  session_ttl: 168h
+  session_secret: change-this-long-random-secret
+
 tls:
   enabled: false
   cert_file: ./certs/server.crt
@@ -11,3 +16,7 @@ tls:
 users:
   - username: camera
     password: change-me
+
+ui_users:
+  - username: admin
+    password: change-me-ui

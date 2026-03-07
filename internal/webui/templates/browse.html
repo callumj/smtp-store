@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>File Browser</h1>
+      <nav class="breadcrumbs">
+        {{range .Breadcrumbs}}
+          <a href="{{.URL}}">{{.Label}}</a>
+        {{end}}
+      </nav>
+    </div>
+    <div class="topbar-actions">
+      <span class="pill">{{.CurrentUser}}</span>
+      <a class="btn" href="/">Dashboard</a>
+      <form method="post" action="/logout">
+        <button class="btn" type="submit">Log out</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page-grid single">
+    <section class="glass-card">
+      <div class="row-between">
+        <h2>Current Path</h2>
+        <code>{{if .CurrentPath}}{{.CurrentPath}}{{else}}/ (root){{end}}</code>
+      </div>
+
+      {{if .Entries}}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Size</th>
+              <th>Modified</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Entries}}
+            <tr>
+              <td><code>{{.Name}}</code></td>
+              <td>{{if .IsDir}}Folder{{else}}File{{end}}</td>
+              <td>{{.Size}}</td>
+              <td>{{.Modified}}</td>
+              <td class="actions">
+                {{if .IsDir}}
+                  <a href="{{.BrowseURL}}">Open</a>
+                {{else}}
+                  <a href="{{.ViewURL}}">View</a>
+                  <a href="{{.DownloadURL}}">Download</a>
+                {{end}}
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <p class="muted">Folder is empty.</p>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>

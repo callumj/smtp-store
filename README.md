@@ -1,6 +1,7 @@
 # smtp-store
 
 Local Go SMTP capture server for Reolink-style camera alerts.
+Includes a built-in web UI to browse stored messages and attachments.
 
 ## Run locally
 
@@ -8,13 +9,25 @@ Local Go SMTP capture server for Reolink-style camera alerts.
 ```bash
 cp config.example.yaml config.yaml
 ```
-2. Edit `config.yaml` with your users, storage path, and optional TLS cert paths.
+2. Edit `config.yaml` with your SMTP users, UI users, storage path, and optional TLS cert paths.
    - Set `verbose_logs: true` to log connection attempts, auth attempts, and message command flow.
+   - Set a strong `web.session_secret` value.
 3. Start the server:
 
 ```bash
 go run ./cmd/smtp-store -config config.yaml
 ```
+
+By default:
+- SMTP listens on `127.0.0.1:2525`
+- Web UI listens on `0.0.0.0:8080`
+
+UI routes:
+- `/login`
+- `/` dashboard (recipient tree + recent feed)
+- `/browse/*path`
+- `/view/*path`
+- `/download/*path`
 
 ## Build
 
@@ -62,6 +75,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now smtp-store
 sudo systemctl status smtp-store
 ```
+
+If exposed beyond localhost, run the UI behind HTTPS (reverse proxy preferred).
+Cookie security automatically sets `Secure` when requests arrive over TLS (including `X-Forwarded-Proto: https`).
 
 Logs:
 
