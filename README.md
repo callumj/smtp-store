@@ -55,6 +55,20 @@ make test
 
 An example unit file is included at `deploy/systemd/smtp-store.service`.
 
+### Automated install script
+
+You can run the installer directly on a Linux host (including LXC with systemd):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/callumj/smtp-store/main/scripts/install-linux.sh | sudo bash
+```
+
+Install a specific release tag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/callumj/smtp-store/main/scripts/install-linux.sh | sudo bash -s -- --version v0.2.0
+```
+
 Example install steps:
 
 ```bash
