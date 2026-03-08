@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"smtp-store/internal/classify"
 	"smtp-store/internal/config"
 )
 
@@ -79,6 +80,15 @@ func TestBrowseAndViewEndpoints(t *testing.T) {
 	if !strings.Contains(browseBody, "112321_1.mp4") {
 		t.Fatalf("browse body missing attachment entry")
 	}
+	if strings.Contains(browseBody, ".detections.json") {
+		t.Fatalf("browse body should not list sidecar files")
+	}
+	if !strings.Contains(browseBody, "Person") {
+		t.Fatalf("browse body missing person detection badge")
+	}
+	if !strings.Contains(browseBody, "fox") {
+		t.Fatalf("browse body missing raw detection label")
+	}
 
 	textViewURL := ts.URL + "/view/camera@local/2026/03/07/112321.txt"
 	textResp := doRequestNoRedirect(t, ts.Client(), http.MethodGet, textViewURL, nil, map[string]string{"Cookie": cookie.String()})
@@ -119,6 +129,12 @@ func TestBrowseAndViewEndpoints(t *testing.T) {
 	if !strings.Contains(dashBody, "112321_1.mp4") {
 		t.Fatalf("dashboard missing recent file")
 	}
+	if !strings.Contains(dashBody, "Person") {
+		t.Fatalf("dashboard missing person detection badge")
+	}
+	if !strings.Contains(dashBody, "fox") {
+		t.Fatalf("dashboard missing raw detection label")
+	}
 
 	_ = root
 }
@@ -141,6 +157,23 @@ func TestPathTraversalBlocked(t *testing.T) {
 	}
 }
 
+func TestDetectionStatesRendered(t *testing.T) {
+	t.Parallel()
+	ts, _ := startTestUIServer(t, "1h")
+	cookie := loginAndGetSessionCookie(t, ts, "admin", "ui-pass")
+
+	resp := doRequestNoRedirect(t, ts.Client(), http.MethodGet, ts.URL+"/", nil, map[string]string{"Cookie": cookie.String()})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body := readBody(t, resp)
+	for _, token := range []string{"pending", "failed", "skipped", "none"} {
+		if !strings.Contains(strings.ToLower(body), token) {
+			t.Fatalf("dashboard missing detection state %q", token)
+		}
+	}
+}
+
 func startTestUIServer(t *testing.T, sessionTTL string) (*httptest.Server, string) {
 	t.Helper()
 
@@ -154,6 +187,63 @@ func startTestUIServer(t *testing.T, sessionTTL string) (*httptest.Server, strin
 	}
 	if err := os.WriteFile(filepath.Join(dir, "112321_1.mp4"), []byte{0x00, 0x01, 0x02, 0x03}, 0o644); err != nil {
 		t.Fatalf("write attachment file: %v", err)
+	}
+	for _, name := range []string{"112322_1.mp4", "112323_1.mp4", "112324_1.mp4", "112325_1.mp4"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte{0x00, 0x01, 0x02, 0x03}, 0o644); err != nil {
+			t.Fatalf("write attachment file %s: %v", name, err)
+		}
+	}
+	sidecar := classify.Sidecar{
+		SchemaVersion: classify.SchemaVersion,
+		RelativePath:  "camera@local/2026/03/07/112321_1.mp4",
+		State:         classify.StateSuccess,
+		Provider:      "gemini",
+		Model:         "gemini-test",
+		HasPerson:     true,
+		HasAnimal:     true,
+		Detections: []classify.Detection{
+			{Category: "person", Label: "person", Confidence: 0.92},
+			{Category: "animal", Label: "fox", Confidence: 0.84},
+		},
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := classify.WriteSidecar(filepath.Join(dir, "112321_1.mp4"), sidecar); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	failed := classify.Sidecar{
+		SchemaVersion: classify.SchemaVersion,
+		RelativePath:  "camera@local/2026/03/07/112323_1.mp4",
+		State:         classify.StateFailed,
+		Provider:      "gemini",
+		Model:         "gemini-test",
+		LastError:     "mock failure",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := classify.WriteSidecar(filepath.Join(dir, "112323_1.mp4"), failed); err != nil {
+		t.Fatalf("write failed sidecar: %v", err)
+	}
+	skipped := classify.Sidecar{
+		SchemaVersion: classify.SchemaVersion,
+		RelativePath:  "camera@local/2026/03/07/112324_1.mp4",
+		State:         classify.StateSkipped,
+		Provider:      "gemini",
+		Model:         "gemini-test",
+		LastError:     "ffmpeg unavailable",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := classify.WriteSidecar(filepath.Join(dir, "112324_1.mp4"), skipped); err != nil {
+		t.Fatalf("write skipped sidecar: %v", err)
+	}
+	none := classify.Sidecar{
+		SchemaVersion: classify.SchemaVersion,
+		RelativePath:  "camera@local/2026/03/07/112325_1.mp4",
+		State:         classify.StateSuccess,
+		Provider:      "gemini",
+		Model:         "gemini-test",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := classify.WriteSidecar(filepath.Join(dir, "112325_1.mp4"), none); err != nil {
+		t.Fatalf("write none sidecar: %v", err)
 	}
 
 	cfg := &config.Config{

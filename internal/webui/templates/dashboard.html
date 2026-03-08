@@ -48,6 +48,7 @@
               <th>Recipient</th>
               <th>Size</th>
               <th>Modified</th>
+              <th>Detections</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -58,6 +59,14 @@
               <td>{{.Recipient}}</td>
               <td>{{.Size}}</td>
               <td>{{.Modified}}</td>
+              <td>
+                {{if .HasPerson}}<span class="badge badge-person">Person</span>{{end}}
+                {{if .HasAnimal}}<span class="badge badge-animal">Animal</span>{{end}}
+                {{range .DetectLabels}}<span class="badge badge-label">{{.}}</span>{{end}}
+                {{if and (not .HasPerson) (not .HasAnimal)}}
+                  {{if .DetectState}}<span class="badge badge-state">{{.DetectState}}</span>{{else}}-{{end}}
+                {{end}}
+              </td>
               <td class="actions">
                 <a href="{{.ViewURL}}">View</a>
                 <a href="{{.DownloadURL}}">Download</a>

@@ -8,6 +8,18 @@ web:
   session_ttl: 168h
   session_secret: change-this-long-random-secret
 
+classification:
+  enabled: true
+  provider: gemini
+  model: gemini-2.5-flash
+  api_key: your-gemini-api-key
+  confidence_threshold: 0.60
+  worker_concurrency: 1
+  frame_count: 6
+  backfill_window: 168h
+  retry_max: 3
+  store_raw_response: true
+
 tls:
   enabled: false
   cert_file: ./certs/server.crt

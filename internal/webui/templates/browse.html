@@ -41,6 +41,7 @@
               <th>Type</th>
               <th>Size</th>
               <th>Modified</th>
+              <th>Detections</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -51,6 +52,16 @@
               <td>{{if .IsDir}}Folder{{else}}File{{end}}</td>
               <td>{{.Size}}</td>
               <td>{{.Modified}}</td>
+              <td>
+                {{if .IsDir}}-{{else}}
+                  {{if .HasPerson}}<span class="badge badge-person">Person</span>{{end}}
+                  {{if .HasAnimal}}<span class="badge badge-animal">Animal</span>{{end}}
+                  {{range .DetectLabels}}<span class="badge badge-label">{{.}}</span>{{end}}
+                  {{if and (not .HasPerson) (not .HasAnimal)}}
+                    {{if .DetectState}}<span class="badge badge-state">{{.DetectState}}</span>{{else}}-{{end}}
+                  {{end}}
+                {{end}}
+              </td>
               <td class="actions">
                 {{if .IsDir}}
                   <a href="{{.BrowseURL}}">Open</a>

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 
+	"smtp-store/internal/classify"
 	"smtp-store/internal/config"
 	"smtp-store/internal/smtpserver"
 	"smtp-store/internal/storage"
@@ -28,7 +30,17 @@ func main() {
 	}
 
 	store := storage.New(cfg.StorageRoot)
-	smtpSrv, err := smtpserver.New(cfg, store, logger)
+	var classifierSvc *classify.Service
+	if cfg.ClassificationEnabled() {
+		classifierSvc, err = classify.NewService(cfg, logger)
+		if err != nil {
+			logger.Error("failed to initialize classification service", "error", err)
+			os.Exit(1)
+		}
+		classifierSvc.Start(context.Background())
+	}
+
+	smtpSrv, err := smtpserver.New(cfg, store, logger, classifierSvc)
 	if err != nil {
 		logger.Error("failed to initialize SMTP server", "error", err)
 		os.Exit(1)
@@ -49,6 +61,9 @@ func main() {
 		"starttls", cfg.TLS.Enabled,
 		"verbose_logs", cfg.VerboseLogs,
 		"ui_users", len(cfg.UIUsers),
+		"classification_enabled", cfg.ClassificationEnabled(),
+		"classification_provider", cfg.Classification.Provider,
+		"classification_model", cfg.Classification.Model,
 	)
 
 	errCh := make(chan error, 2)

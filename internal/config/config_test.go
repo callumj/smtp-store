@@ -9,6 +9,11 @@ import (
 const requiredConfigBlock = `
 web:
   session_secret: test-secret
+classification:
+  enabled: true
+  provider: gemini
+  model: gemini-2.5-flash
+  api_key: test-api-key
 ui_users:
   - username: ui
     password: ui-secret
@@ -41,6 +46,15 @@ users:
 	}
 	if cfg.WebSessionTTLDuration().String() != "168h0m0s" {
 		t.Fatalf("unexpected default web session ttl: %s", cfg.WebSessionTTLDuration())
+	}
+	if !cfg.ClassificationEnabled() {
+		t.Fatal("expected classification to be enabled")
+	}
+	if cfg.ClassificationBackfillWindowDuration().String() != "168h0m0s" {
+		t.Fatalf("unexpected default classification backfill window: %s", cfg.ClassificationBackfillWindowDuration())
+	}
+	if !cfg.ClassificationStoreRawResponseEnabled() {
+		t.Fatal("expected raw response storage to default true")
 	}
 	if got := cfg.UserMap()["camera"]; got != "secret" {
 		t.Fatalf("unexpected user map password: %q", got)
@@ -98,6 +112,11 @@ users:
     password: secret
 web:
   session_secret: test-secret
+classification:
+  enabled: true
+  provider: gemini
+  model: gemini-2.5-flash
+  api_key: test-api-key
 `)
 
 	_, err := Load(configPath)
@@ -115,6 +134,11 @@ func TestLoadFailsWithoutWebSessionSecret(t *testing.T) {
 users:
   - username: camera
     password: secret
+classification:
+  enabled: true
+  provider: gemini
+  model: gemini-2.5-flash
+  api_key: test-api-key
 ui_users:
   - username: ui
     password: ui-secret
@@ -138,6 +162,11 @@ users:
 web:
   session_secret: test-secret
   session_ttl: nope
+classification:
+  enabled: true
+  provider: gemini
+  model: gemini-2.5-flash
+  api_key: test-api-key
 ui_users:
   - username: ui
     password: ui-secret
@@ -146,6 +175,59 @@ ui_users:
 	_, err := Load(configPath)
 	if err == nil {
 		t.Fatal("expected web.session_ttl validation error")
+	}
+}
+
+func TestLoadFailsWithoutClassificationModel(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	writeFile(t, configPath, `storage_root: ./captures
+users:
+  - username: camera
+    password: secret
+web:
+  session_secret: test-secret
+classification:
+  enabled: true
+  provider: gemini
+  api_key: test-api-key
+ui_users:
+  - username: ui
+    password: ui-secret
+`)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected classification.model validation error")
+	}
+}
+
+func TestLoadAllowsDisabledClassificationWithoutAPIKey(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	writeFile(t, configPath, `storage_root: ./captures
+users:
+  - username: camera
+    password: secret
+web:
+  session_secret: test-secret
+classification:
+  enabled: false
+ui_users:
+  - username: ui
+    password: ui-secret
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ClassificationEnabled() {
+		t.Fatal("expected classification to be disabled")
 	}
 }
 

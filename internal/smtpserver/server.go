@@ -18,13 +18,19 @@ import (
 	"smtp-store/internal/storage"
 )
 
+// VideoEnqueuer receives attachment paths for async post-processing.
+type VideoEnqueuer interface {
+	Enqueue(videoPath string) bool
+}
+
 // New constructs an SMTP server configured for local authenticated capture.
-func New(cfg *config.Config, store *storage.Store, logger *slog.Logger) (*smtp.Server, error) {
+func New(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnqueuer VideoEnqueuer) (*smtp.Server, error) {
 	backend := &backend{
-		users:   cfg.UserMap(),
-		store:   store,
-		logger:  logger,
-		verbose: cfg.VerboseLogs,
+		users:         cfg.UserMap(),
+		store:         store,
+		logger:        logger,
+		verbose:       cfg.VerboseLogs,
+		videoEnqueuer: videoEnqueuer,
 	}
 
 	srv := smtp.NewServer(backend)
@@ -48,11 +54,12 @@ func New(cfg *config.Config, store *storage.Store, logger *slog.Logger) (*smtp.S
 }
 
 type backend struct {
-	users      map[string]string
-	store      *storage.Store
-	logger     *slog.Logger
-	verbose    bool
-	nextConnID atomic.Uint64
+	users         map[string]string
+	store         *storage.Store
+	logger        *slog.Logger
+	verbose       bool
+	videoEnqueuer VideoEnqueuer
+	nextConnID    atomic.Uint64
 }
 
 func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
@@ -174,6 +181,11 @@ func (s *session) Data(r io.Reader) error {
 		"body_path", result.BodyPath,
 		"attachments", len(result.AttachmentPaths),
 	)
+	if s.backend.videoEnqueuer != nil {
+		for _, attachmentPath := range result.AttachmentPaths {
+			s.backend.videoEnqueuer.Enqueue(attachmentPath)
+		}
+	}
 
 	return nil
 }

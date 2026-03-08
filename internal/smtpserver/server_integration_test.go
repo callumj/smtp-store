@@ -213,7 +213,7 @@ func startTestServer(t *testing.T, withTLS bool) (addr, storageRoot string, clea
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := storage.New(storageRoot)
-	srv, err := New(cfg, store, logger)
+	srv, err := New(cfg, store, logger, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

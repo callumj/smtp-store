@@ -14,18 +14,28 @@ import (
 const defaultListenAddr = "127.0.0.1:2525"
 const defaultWebListenAddr = "0.0.0.0:8080"
 const defaultWebSessionTTL = "168h"
+const defaultClassificationProvider = "gemini"
+const defaultClassificationConfidenceThreshold = 0.60
+const defaultClassificationWorkerConcurrency = 1
+const defaultClassificationFrameCount = 6
+const defaultClassificationBackfillWindow = "168h"
+const defaultClassificationRetryMax = 3
 
 // Config is the runtime configuration for the SMTP capture service.
 type Config struct {
-	ListenAddr    string      `yaml:"listen_addr"`
-	StorageRoot   string      `yaml:"storage_root"`
-	Hostname      string      `yaml:"hostname"`
-	VerboseLogs   bool        `yaml:"verbose_logs"`
-	TLS           TLSConfig   `yaml:"tls"`
-	Web           WebConfig   `yaml:"web"`
-	Users         []UserCreds `yaml:"users"`
-	UIUsers       []UserCreds `yaml:"ui_users"`
-	webSessionTTL time.Duration
+	ListenAddr                      string               `yaml:"listen_addr"`
+	StorageRoot                     string               `yaml:"storage_root"`
+	Hostname                        string               `yaml:"hostname"`
+	VerboseLogs                     bool                 `yaml:"verbose_logs"`
+	TLS                             TLSConfig            `yaml:"tls"`
+	Web                             WebConfig            `yaml:"web"`
+	Classification                  ClassificationConfig `yaml:"classification"`
+	Users                           []UserCreds          `yaml:"users"`
+	UIUsers                         []UserCreds          `yaml:"ui_users"`
+	webSessionTTL                   time.Duration
+	classificationBackfillWindow    time.Duration
+	classificationEnabled           bool
+	classificationStoreRawResponses bool
 }
 
 // TLSConfig controls optional STARTTLS support.
@@ -40,6 +50,20 @@ type WebConfig struct {
 	ListenAddr    string `yaml:"listen_addr"`
 	SessionTTL    string `yaml:"session_ttl"`
 	SessionSecret string `yaml:"session_secret"`
+}
+
+// ClassificationConfig controls async video detection metadata generation.
+type ClassificationConfig struct {
+	Enabled             *bool   `yaml:"enabled"`
+	Provider            string  `yaml:"provider"`
+	Model               string  `yaml:"model"`
+	APIKey              string  `yaml:"api_key"`
+	ConfidenceThreshold float64 `yaml:"confidence_threshold"`
+	WorkerConcurrency   int     `yaml:"worker_concurrency"`
+	FrameCount          int     `yaml:"frame_count"`
+	BackfillWindow      string  `yaml:"backfill_window"`
+	RetryMax            int     `yaml:"retry_max"`
+	StoreRawResponse    *bool   `yaml:"store_raw_response"`
 }
 
 // UserCreds is a static local auth user.
@@ -71,6 +95,15 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	c.classificationEnabled = true
+	if c.Classification.Enabled != nil {
+		c.classificationEnabled = *c.Classification.Enabled
+	}
+	c.classificationStoreRawResponses = true
+	if c.Classification.StoreRawResponse != nil {
+		c.classificationStoreRawResponses = *c.Classification.StoreRawResponse
+	}
+
 	if strings.TrimSpace(c.ListenAddr) == "" {
 		c.ListenAddr = defaultListenAddr
 	}
@@ -79,6 +112,24 @@ func (c *Config) applyDefaults() {
 	}
 	if strings.TrimSpace(c.Web.SessionTTL) == "" {
 		c.Web.SessionTTL = defaultWebSessionTTL
+	}
+	if strings.TrimSpace(c.Classification.Provider) == "" {
+		c.Classification.Provider = defaultClassificationProvider
+	}
+	if c.Classification.ConfidenceThreshold == 0 {
+		c.Classification.ConfidenceThreshold = defaultClassificationConfidenceThreshold
+	}
+	if c.Classification.WorkerConcurrency == 0 {
+		c.Classification.WorkerConcurrency = defaultClassificationWorkerConcurrency
+	}
+	if c.Classification.FrameCount == 0 {
+		c.Classification.FrameCount = defaultClassificationFrameCount
+	}
+	if strings.TrimSpace(c.Classification.BackfillWindow) == "" {
+		c.Classification.BackfillWindow = defaultClassificationBackfillWindow
+	}
+	if c.Classification.RetryMax == 0 {
+		c.Classification.RetryMax = defaultClassificationRetryMax
 	}
 	if strings.TrimSpace(c.Hostname) == "" {
 		hostname, err := os.Hostname()
@@ -112,6 +163,39 @@ func (c *Config) Validate() error {
 		return errors.New("web.session_ttl must be > 0")
 	}
 	c.webSessionTTL = ttl
+
+	if c.Classification.WorkerConcurrency < 1 {
+		return errors.New("classification.worker_concurrency must be >= 1")
+	}
+	if c.Classification.FrameCount < 1 {
+		return errors.New("classification.frame_count must be >= 1")
+	}
+	if c.Classification.RetryMax < 0 {
+		return errors.New("classification.retry_max must be >= 0")
+	}
+	if c.Classification.ConfidenceThreshold < 0 || c.Classification.ConfidenceThreshold > 1 {
+		return errors.New("classification.confidence_threshold must be between 0 and 1")
+	}
+	backfillWindow, err := time.ParseDuration(strings.TrimSpace(c.Classification.BackfillWindow))
+	if err != nil {
+		return fmt.Errorf("invalid classification.backfill_window: %w", err)
+	}
+	if backfillWindow <= 0 {
+		return errors.New("classification.backfill_window must be > 0")
+	}
+	c.classificationBackfillWindow = backfillWindow
+
+	if c.classificationEnabled {
+		if strings.TrimSpace(c.Classification.Provider) == "" {
+			return errors.New("classification.provider is required when classification.enabled=true")
+		}
+		if strings.TrimSpace(c.Classification.Model) == "" {
+			return errors.New("classification.model is required when classification.enabled=true")
+		}
+		if strings.TrimSpace(c.Classification.APIKey) == "" {
+			return errors.New("classification.api_key is required when classification.enabled=true")
+		}
+	}
 
 	seen := make(map[string]struct{}, len(c.Users))
 	for i, u := range c.Users {
@@ -190,4 +274,23 @@ func (c *Config) WebSessionTTLDuration() time.Duration {
 	}
 	fallback, _ := time.ParseDuration(defaultWebSessionTTL)
 	return fallback
+}
+
+// ClassificationEnabled returns whether async classification should run.
+func (c *Config) ClassificationEnabled() bool {
+	return c.classificationEnabled
+}
+
+// ClassificationBackfillWindowDuration returns parsed backfill window duration.
+func (c *Config) ClassificationBackfillWindowDuration() time.Duration {
+	if c.classificationBackfillWindow > 0 {
+		return c.classificationBackfillWindow
+	}
+	fallback, _ := time.ParseDuration(defaultClassificationBackfillWindow)
+	return fallback
+}
+
+// ClassificationStoreRawResponseEnabled returns whether raw model output is persisted.
+func (c *Config) ClassificationStoreRawResponseEnabled() bool {
+	return c.classificationStoreRawResponses
 }

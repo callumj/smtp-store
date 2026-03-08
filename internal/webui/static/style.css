@@ -169,6 +169,42 @@ th {
   flex-wrap: wrap;
 }
 
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  font-size: 0.75rem;
+  margin-right: 0.28rem;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.badge-person {
+  background: rgba(141, 224, 181, 0.2);
+  border-color: rgba(141, 224, 181, 0.45);
+  color: #b8ffe5;
+}
+
+.badge-animal {
+  background: rgba(255, 179, 71, 0.2);
+  border-color: rgba(255, 179, 71, 0.5);
+  color: #ffd9a0;
+}
+
+.badge-state {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #d9e3e6;
+  text-transform: capitalize;
+}
+
+.badge-label {
+  background: rgba(126, 163, 255, 0.2);
+  border-color: rgba(126, 163, 255, 0.5);
+  color: #d7e3ff;
+}
+
 .btn {
   border: 1px solid rgba(255, 255, 255, 0.25);
   background: rgba(255, 255, 255, 0.1);

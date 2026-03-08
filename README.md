@@ -9,9 +9,10 @@ Includes a built-in web UI to browse stored messages and attachments.
 ```bash
 cp config.example.yaml config.yaml
 ```
-2. Edit `config.yaml` with your SMTP users, UI users, storage path, and optional TLS cert paths.
+2. Edit `config.yaml` with your SMTP users, UI users, storage path, optional TLS cert paths, and classification settings.
    - Set `verbose_logs: true` to log connection attempts, auth attempts, and message command flow.
    - Set a strong `web.session_secret` value.
+   - Set `classification.api_key` for Gemini.
 3. Start the server:
 
 ```bash
@@ -28,6 +29,14 @@ UI routes:
 - `/browse/*path`
 - `/view/*path`
 - `/download/*path`
+
+Detection metadata:
+- Video attachments are asynchronously classified for person/animal detections.
+- Sidecars are stored as `<video_filename>.detections.json`.
+- UI tables show detection badges (`Person`, `Animal`) or states (`pending`, `failed`, `skipped`, `none`).
+
+Dependencies for classification:
+- `ffmpeg` must be installed for frame sampling.
 
 ## Build
 

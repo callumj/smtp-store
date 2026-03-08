@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"smtp-store/internal/classify"
 	"smtp-store/internal/config"
 )
 
@@ -56,24 +57,32 @@ type recipientEntry struct {
 }
 
 type recentItem struct {
-	Name        string
-	Recipient   string
-	Relative    string
-	Size        string
-	Modified    string
-	ViewURL     string
-	DownloadURL string
+	Name         string
+	Recipient    string
+	Relative     string
+	Size         string
+	Modified     string
+	HasPerson    bool
+	HasAnimal    bool
+	DetectState  string
+	DetectLabels []string
+	ViewURL      string
+	DownloadURL  string
 }
 
 type browseEntry struct {
-	Name        string
-	Relative    string
-	IsDir       bool
-	Size        string
-	Modified    string
-	BrowseURL   string
-	ViewURL     string
-	DownloadURL string
+	Name         string
+	Relative     string
+	IsDir        bool
+	Size         string
+	Modified     string
+	HasPerson    bool
+	HasAnimal    bool
+	DetectState  string
+	DetectLabels []string
+	BrowseURL    string
+	ViewURL      string
+	DownloadURL  string
 }
 
 type crumb struct {
@@ -318,6 +327,9 @@ func (a *app) handleBrowse(w http.ResponseWriter, r *http.Request) {
 
 	browseEntries := make([]browseEntry, 0, len(entries))
 	for _, entry := range entries {
+		if classify.IsDetectionSidecarPath(entry.Name()) {
+			continue
+		}
 		entryInfo, err := entry.Info()
 		if err != nil {
 			continue
@@ -335,6 +347,7 @@ func (a *app) handleBrowse(w http.ResponseWriter, r *http.Request) {
 			item.Size = "-"
 		} else {
 			item.Size = humanSize(entryInfo.Size())
+			item.DetectState, item.HasPerson, item.HasAnimal, item.DetectLabels = a.detectionSummaryForFile(filepath.Join(absPath, entry.Name()))
 			item.ViewURL = "/view/" + escapeRelPath(childRel)
 			item.DownloadURL = "/download/" + escapeRelPath(childRel)
 		}
@@ -648,6 +661,9 @@ func (a *app) listRecentFiles(limit int) ([]recentItem, error) {
 		if d.IsDir() {
 			return nil
 		}
+		if classify.IsDetectionSidecarPath(current) {
+			return nil
+		}
 
 		info, err := d.Info()
 		if err != nil {
@@ -687,14 +703,19 @@ func (a *app) listRecentFiles(limit int) ([]recentItem, error) {
 		if len(parts) > 0 {
 			recipient = parts[0]
 		}
+		detectState, hasPerson, hasAnimal, detectLabels := a.detectionSummaryForFile(c.path)
 		items = append(items, recentItem{
-			Name:        filepath.Base(c.path),
-			Recipient:   recipient,
-			Relative:    c.rel,
-			Size:        humanSize(c.info.Size()),
-			Modified:    c.info.ModTime().Local().Format("2006-01-02 15:04:05"),
-			ViewURL:     "/view/" + escapeRelPath(c.rel),
-			DownloadURL: "/download/" + escapeRelPath(c.rel),
+			Name:         filepath.Base(c.path),
+			Recipient:    recipient,
+			Relative:     c.rel,
+			Size:         humanSize(c.info.Size()),
+			Modified:     c.info.ModTime().Local().Format("2006-01-02 15:04:05"),
+			DetectState:  detectState,
+			HasPerson:    hasPerson,
+			HasAnimal:    hasAnimal,
+			DetectLabels: detectLabels,
+			ViewURL:      "/view/" + escapeRelPath(c.rel),
+			DownloadURL:  "/download/" + escapeRelPath(c.rel),
 		})
 	}
 
@@ -791,6 +812,53 @@ func remoteAddr(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func (a *app) detectionSummaryForFile(filePath string) (state string, hasPerson, hasAnimal bool, labels []string) {
+	if !classify.IsVideoPath(filePath) {
+		return "", false, false, nil
+	}
+	sidecar, err := classify.LoadSidecar(filePath)
+	if err != nil {
+		return classify.StatePending, false, false, nil
+	}
+	return classify.DetectionStatus(sidecar), sidecar.HasPerson, sidecar.HasAnimal, detectionLabels(sidecar)
+}
+
+func detectionLabels(sidecar *classify.Sidecar) []string {
+	if sidecar == nil || len(sidecar.Detections) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(sidecar.Detections))
+	out := make([]string, 0, len(sidecar.Detections))
+	for _, d := range sidecar.Detections {
+		label := strings.TrimSpace(strings.ToLower(d.Label))
+		if label == "" {
+			continue
+		}
+		if isGenericDetectionLabel(label, d.Category) {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	return out
+}
+
+func isGenericDetectionLabel(label, category string) bool {
+	category = strings.TrimSpace(strings.ToLower(category))
+	if label == category {
+		return true
+	}
+	switch label {
+	case "person", "people", "human", "animal":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSecureRequest(r *http.Request) bool {
