@@ -26,6 +26,9 @@ const defaultMQTTTopicPrefix = "smtp-store"
 const defaultMQTTDiscoveryPrefix = "homeassistant"
 const defaultMQTTQoS = 1
 const defaultMQTTMotionResetAfter = "60s"
+const defaultSpoolPath = "/var/lib/smtp-store/spool"
+const defaultSpoolMaxBytes = 10 << 30
+const defaultSpoolFlushInterval = "30s"
 
 // Config is the runtime configuration for the SMTP capture service.
 type Config struct {
@@ -36,6 +39,7 @@ type Config struct {
 	VerboseLogs                     bool                 `yaml:"verbose_logs"`
 	TLS                             TLSConfig            `yaml:"tls"`
 	Web                             WebConfig            `yaml:"web"`
+	Spool                           SpoolConfig          `yaml:"spool"`
 	Classification                  ClassificationConfig `yaml:"classification"`
 	MQTT                            MQTTConfig           `yaml:"mqtt"`
 	Users                           []UserCreds          `yaml:"users"`
@@ -43,9 +47,11 @@ type Config struct {
 	webSessionTTL                   time.Duration
 	classificationBackfillWindow    time.Duration
 	mqttMotionResetAfter            time.Duration
+	spoolFlushInterval              time.Duration
 	classificationEnabled           bool
 	classificationStoreRawResponses bool
 	mqttEnabled                     bool
+	spoolEnabled                    bool
 }
 
 // TLSConfig controls optional STARTTLS support.
@@ -60,6 +66,14 @@ type WebConfig struct {
 	ListenAddr    string `yaml:"listen_addr"`
 	SessionTTL    string `yaml:"session_ttl"`
 	SessionSecret string `yaml:"session_secret"`
+}
+
+// SpoolConfig controls local durable buffering before network storage writes.
+type SpoolConfig struct {
+	Enabled       *bool  `yaml:"enabled"`
+	Path          string `yaml:"path"`
+	MaxBytes      int64  `yaml:"max_bytes"`
+	FlushInterval string `yaml:"flush_interval"`
 }
 
 // ClassificationConfig controls async video detection metadata generation.
@@ -134,6 +148,10 @@ func (c *Config) applyDefaults() {
 	if c.MQTT.Enabled != nil {
 		c.mqttEnabled = *c.MQTT.Enabled
 	}
+	c.spoolEnabled = false
+	if c.Spool.Enabled != nil {
+		c.spoolEnabled = *c.Spool.Enabled
+	}
 
 	if strings.TrimSpace(c.ListenAddr) == "" {
 		c.ListenAddr = defaultListenAddr
@@ -143,6 +161,15 @@ func (c *Config) applyDefaults() {
 	}
 	if strings.TrimSpace(c.Web.SessionTTL) == "" {
 		c.Web.SessionTTL = defaultWebSessionTTL
+	}
+	if strings.TrimSpace(c.Spool.Path) == "" {
+		c.Spool.Path = defaultSpoolPath
+	}
+	if c.Spool.MaxBytes == 0 {
+		c.Spool.MaxBytes = defaultSpoolMaxBytes
+	}
+	if strings.TrimSpace(c.Spool.FlushInterval) == "" {
+		c.Spool.FlushInterval = defaultSpoolFlushInterval
 	}
 	if strings.TrimSpace(c.Classification.Provider) == "" {
 		c.Classification.Provider = defaultClassificationProvider
@@ -215,6 +242,21 @@ func (c *Config) Validate() error {
 		return errors.New("web.session_ttl must be > 0")
 	}
 	c.webSessionTTL = ttl
+
+	spoolFlushInterval, err := time.ParseDuration(strings.TrimSpace(c.Spool.FlushInterval))
+	if err != nil {
+		return fmt.Errorf("invalid spool.flush_interval: %w", err)
+	}
+	if spoolFlushInterval <= 0 {
+		return errors.New("spool.flush_interval must be > 0")
+	}
+	c.spoolFlushInterval = spoolFlushInterval
+	if c.Spool.MaxBytes < 0 {
+		return errors.New("spool.max_bytes must be >= 0")
+	}
+	if c.spoolEnabled && strings.TrimSpace(c.Spool.Path) == "" {
+		return errors.New("spool.path is required when spool.enabled=true")
+	}
 
 	if c.Classification.WorkerConcurrency < 1 {
 		return errors.New("classification.worker_concurrency must be >= 1")
@@ -382,6 +424,20 @@ func (c *Config) ClassificationStoreRawResponseEnabled() bool {
 // MQTTEnabled returns whether Home Assistant MQTT publishing should run.
 func (c *Config) MQTTEnabled() bool {
 	return c.mqttEnabled
+}
+
+// SpoolEnabled returns whether SMTP accepts messages into the local durable spool first.
+func (c *Config) SpoolEnabled() bool {
+	return c.spoolEnabled
+}
+
+// SpoolFlushIntervalDuration returns parsed spool.flush_interval.
+func (c *Config) SpoolFlushIntervalDuration() time.Duration {
+	if c.spoolFlushInterval > 0 {
+		return c.spoolFlushInterval
+	}
+	fallback, _ := time.ParseDuration(defaultSpoolFlushInterval)
+	return fallback
 }
 
 // IndexEnabled reports whether the local metadata index should be used.

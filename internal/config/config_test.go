@@ -59,6 +59,18 @@ users:
 	if cfg.MQTTEnabled() {
 		t.Fatal("expected mqtt to default disabled")
 	}
+	if cfg.SpoolEnabled() {
+		t.Fatal("expected spool to default disabled")
+	}
+	if cfg.Spool.Path != "/var/lib/smtp-store/spool" {
+		t.Fatalf("unexpected default spool path: %q", cfg.Spool.Path)
+	}
+	if cfg.Spool.MaxBytes != 10<<30 {
+		t.Fatalf("unexpected default spool max bytes: %d", cfg.Spool.MaxBytes)
+	}
+	if cfg.SpoolFlushIntervalDuration().String() != "30s" {
+		t.Fatalf("unexpected default spool flush interval: %s", cfg.SpoolFlushIntervalDuration())
+	}
 	if cfg.MQTT.Port != 1883 {
 		t.Fatalf("unexpected default mqtt port: %d", cfg.MQTT.Port)
 	}
@@ -70,6 +82,57 @@ users:
 	}
 	if got := cfg.UIUserMap()["ui"]; got != "ui-secret" {
 		t.Fatalf("unexpected ui user map password: %q", got)
+	}
+}
+
+func TestLoadValidatesEnabledSpool(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	writeFile(t, configPath, `storage_root: ./captures
+users:
+  - username: camera
+    password: secret
+spool:
+  enabled: true
+  path: ./spool
+  max_bytes: 1048576
+  flush_interval: 5s
+`+requiredConfigBlock)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.SpoolEnabled() {
+		t.Fatal("expected spool enabled")
+	}
+	if cfg.Spool.Path != "./spool" {
+		t.Fatalf("unexpected spool path: %q", cfg.Spool.Path)
+	}
+	if cfg.SpoolFlushIntervalDuration().String() != "5s" {
+		t.Fatalf("unexpected spool flush interval: %s", cfg.SpoolFlushIntervalDuration())
+	}
+}
+
+func TestLoadFailsWithInvalidSpoolInterval(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	writeFile(t, configPath, `storage_root: ./captures
+users:
+  - username: camera
+    password: secret
+spool:
+  enabled: true
+  flush_interval: nope
+`+requiredConfigBlock)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected spool.flush_interval validation error")
 	}
 }
 

@@ -9,6 +9,12 @@ web:
   session_ttl: 168h
   session_secret: change-this-long-random-secret
 
+spool:
+  enabled: false
+  path: /var/lib/smtp-store/spool
+  max_bytes: 10737418240
+  flush_interval: 30s
+
 classification:
   enabled: true
   provider: gemini

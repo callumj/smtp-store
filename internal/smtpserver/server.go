@@ -31,6 +31,11 @@ type FileIndexer interface {
 // StorageFaultHandler is called when the backing storage appears unavailable.
 type StorageFaultHandler func(error)
 
+// Spooler accepts raw SMTP messages into a durable local queue.
+type Spooler interface {
+	Enqueue(raw []byte, receivedAt time.Time) (string, error)
+}
+
 // New constructs an SMTP server configured for local authenticated capture.
 func New(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnqueuer VideoEnqueuer, fileIndexer FileIndexer) (*smtp.Server, error) {
 	return NewWithStorageFaultHandler(cfg, store, logger, videoEnqueuer, fileIndexer, nil)
@@ -38,6 +43,11 @@ func New(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnq
 
 // NewWithStorageFaultHandler constructs an SMTP server with a fatal storage fault callback.
 func NewWithStorageFaultHandler(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnqueuer VideoEnqueuer, fileIndexer FileIndexer, storageFaultHandler StorageFaultHandler) (*smtp.Server, error) {
+	return NewWithSpooler(cfg, store, logger, videoEnqueuer, fileIndexer, storageFaultHandler, nil)
+}
+
+// NewWithSpooler constructs an SMTP server that optionally accepts messages into a local spool.
+func NewWithSpooler(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnqueuer VideoEnqueuer, fileIndexer FileIndexer, storageFaultHandler StorageFaultHandler, spooler Spooler) (*smtp.Server, error) {
 	backend := &backend{
 		users:               cfg.UserMap(),
 		store:               store,
@@ -46,6 +56,7 @@ func NewWithStorageFaultHandler(cfg *config.Config, store *storage.Store, logger
 		videoEnqueuer:       videoEnqueuer,
 		fileIndexer:         fileIndexer,
 		storageFaultHandler: storageFaultHandler,
+		spooler:             spooler,
 	}
 
 	srv := smtp.NewServer(backend)
@@ -76,6 +87,7 @@ type backend struct {
 	videoEnqueuer       VideoEnqueuer
 	fileIndexer         FileIndexer
 	storageFaultHandler StorageFaultHandler
+	spooler             Spooler
 	nextConnID          atomic.Uint64
 }
 
@@ -188,7 +200,24 @@ func (s *session) Data(r io.Reader) error {
 	}
 	s.vlog("message payload read", "bytes", len(raw))
 
-	result, err := s.backend.store.ProcessAndStore(raw, time.Now())
+	receivedAt := time.Now()
+	if s.backend.spooler != nil {
+		spoolID, err := s.backend.spooler.Enqueue(raw, receivedAt)
+		if err != nil {
+			s.backend.logger.Error("failed to spool message", "error", err, "from", s.from, "auth_user", s.username)
+			return &smtp.SMTPError{Code: 452, Message: "local message spool unavailable"}
+		}
+		s.backend.logger.Info(
+			"message spooled",
+			"from", s.from,
+			"auth_user", s.username,
+			"spool_id", spoolID,
+			"bytes", len(raw),
+		)
+		return nil
+	}
+
+	result, err := s.backend.store.ProcessAndStore(raw, receivedAt)
 	if err != nil {
 		var smtpErr *smtp.SMTPError
 		if errors.As(err, &smtpErr) {

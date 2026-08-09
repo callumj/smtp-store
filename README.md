@@ -14,6 +14,7 @@ cp config.example.yaml config.yaml
    - Set a strong `web.session_secret` value.
    - Set `classification.api_key` for Gemini.
    - Set `index_path` to a local-disk SQLite path when `storage_root` is a NAS/network mount.
+   - Enable `spool` on local disk when `storage_root` is a NAS/network mount and camera alerts should survive short storage outages.
 3. Start the server:
 
 ```bash
@@ -35,6 +36,23 @@ Dashboard performance:
 - The web UI can maintain a local SQLite metadata index via `index_path`.
 - Keep `index_path` on local disk, for example `/var/lib/smtp-store/index.sqlite`, so dashboard recent-file queries do not recursively scan a network-mounted `storage_root`.
 - When `index_path` is empty, the UI falls back to walking `storage_root` on demand.
+
+Local durable spool:
+- When `spool.enabled` is true, SMTP messages are accepted into a local disk queue first, then a background worker writes them to `storage_root`.
+- This is intended for NAS-backed storage where short outages, reboots, or stale CIFS mounts would otherwise make cameras drop alert emails.
+- Classification, SQLite indexing, and MQTT notifications run only after a spooled message is successfully written to final storage.
+- Keep `spool.path` on local LXC/host disk, for example `/var/lib/smtp-store/spool`.
+- `spool.max_bytes` bounds accepted queued messages; once full, SMTP returns a temporary failure instead of risking local disk exhaustion.
+
+Example:
+
+```yaml
+spool:
+  enabled: true
+  path: /var/lib/smtp-store/spool
+  max_bytes: 10737418240
+  flush_interval: 30s
+```
 
 Detection metadata:
 - Video attachments are asynchronously classified for person, animal, and vehicle detections.

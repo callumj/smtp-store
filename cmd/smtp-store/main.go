@@ -16,6 +16,7 @@ import (
 	"smtp-store/internal/fileindex"
 	"smtp-store/internal/mqttnotify"
 	"smtp-store/internal/smtpserver"
+	"smtp-store/internal/spool"
 	"smtp-store/internal/storage"
 	"smtp-store/internal/webui"
 )
@@ -36,11 +37,6 @@ func main() {
 	store := storage.New(cfg.StorageRoot)
 	ctx := context.Background()
 
-	if err := storage.CheckWritable(cfg.StorageRoot); err != nil {
-		logger.Error("storage root is not writable", "error", err, "storage_root", cfg.StorageRoot)
-		os.Exit(1)
-	}
-
 	errCh := make(chan error, 3)
 	var storageFaultSignaled atomic.Bool
 	storageFaultHandler := func(err error) {
@@ -53,7 +49,13 @@ func main() {
 			errCh <- fmt.Errorf("storage fault: %w", err)
 		}()
 	}
-	startStorageWatchdog(ctx, cfg.StorageRoot, logger, storageFaultHandler)
+	if !cfg.SpoolEnabled() {
+		if err := storage.CheckWritable(cfg.StorageRoot); err != nil {
+			logger.Error("storage root is not writable", "error", err, "storage_root", cfg.StorageRoot)
+			os.Exit(1)
+		}
+		startStorageWatchdog(ctx, cfg.StorageRoot, logger, storageFaultHandler)
+	}
 
 	var index *fileindex.Index
 	if cfg.IndexEnabled() {
@@ -95,7 +97,35 @@ func main() {
 		classifierSvc.Start(ctx)
 	}
 
-	smtpSrv, err := smtpserver.NewWithStorageFaultHandler(cfg, store, logger, classifierSvc, index, storageFaultHandler)
+	postStore := func(result storage.Result) {
+		if classifierSvc != nil {
+			for _, attachmentPath := range result.AttachmentPaths {
+				classifierSvc.Enqueue(attachmentPath)
+			}
+		}
+		if index != nil {
+			if err := index.UpsertPath(result.BodyPath); err != nil {
+				logger.Warn("failed indexing stored body", "path", result.BodyPath, "error", err)
+			}
+			for _, attachmentPath := range result.AttachmentPaths {
+				if err := index.UpsertPath(attachmentPath); err != nil {
+					logger.Warn("failed indexing stored attachment", "path", attachmentPath, "error", err)
+				}
+			}
+		}
+	}
+
+	var spoolQueue *spool.Queue
+	if cfg.SpoolEnabled() {
+		spoolQueue, err = spool.New(cfg.Spool.Path, cfg.Spool.MaxBytes, cfg.SpoolFlushIntervalDuration(), store, logger, postStore)
+		if err != nil {
+			logger.Error("failed to initialize local spool", "error", err, "path", cfg.Spool.Path)
+			os.Exit(1)
+		}
+		spoolQueue.Start(ctx)
+	}
+
+	smtpSrv, err := smtpserver.NewWithSpooler(cfg, store, logger, classifierSvc, index, storageFaultHandler, spoolQueue)
 	if err != nil {
 		logger.Error("failed to initialize SMTP server", "error", err)
 		os.Exit(1)
@@ -122,6 +152,8 @@ func main() {
 		"classification_provider", cfg.Classification.Provider,
 		"classification_model", cfg.Classification.Model,
 		"mqtt_enabled", cfg.MQTTEnabled(),
+		"spool_enabled", cfg.SpoolEnabled(),
+		"spool_path", cfg.Spool.Path,
 	)
 
 	go func() {
