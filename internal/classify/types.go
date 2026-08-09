@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const (
 	StatePending = "pending"
@@ -29,20 +29,24 @@ type Detection struct {
 
 // Sidecar is persisted as <video>.detections.json.
 type Sidecar struct {
-	SchemaVersion int         `json:"schema_version"`
-	RelativePath  string      `json:"relative_path"`
-	FileSize      int64       `json:"file_size"`
-	FileModTime   string      `json:"file_mod_time"`
-	State         string      `json:"state"`
-	Provider      string      `json:"provider"`
-	Model         string      `json:"model"`
-	Attempts      int         `json:"attempts"`
-	UpdatedAt     string      `json:"updated_at"`
-	LastError     string      `json:"last_error,omitempty"`
-	Detections    []Detection `json:"detections,omitempty"`
-	HasPerson     bool        `json:"has_person"`
-	HasAnimal     bool        `json:"has_animal"`
-	RawResponse   string      `json:"raw_response,omitempty"`
+	SchemaVersion   int         `json:"schema_version"`
+	RelativePath    string      `json:"relative_path"`
+	FileSize        int64       `json:"file_size"`
+	FileModTime     string      `json:"file_mod_time"`
+	State           string      `json:"state"`
+	Provider        string      `json:"provider"`
+	Model           string      `json:"model"`
+	Attempts        int         `json:"attempts"`
+	UpdatedAt       string      `json:"updated_at"`
+	LastError       string      `json:"last_error,omitempty"`
+	Detections      []Detection `json:"detections,omitempty"`
+	HasPerson       bool        `json:"has_person"`
+	HasAnimal       bool        `json:"has_animal"`
+	HasVehicle      bool        `json:"has_vehicle"`
+	ThumbnailPath   string      `json:"thumbnail_path,omitempty"`
+	MQTTPublishedAt string      `json:"mqtt_published_at,omitempty"`
+	MQTTLastError   string      `json:"mqtt_last_error,omitempty"`
+	RawResponse     string      `json:"raw_response,omitempty"`
 }
 
 func sidecarPath(videoPath string) string {
@@ -135,7 +139,7 @@ func DetectionStatus(s *Sidecar) string {
 	case StateSkipped:
 		return StateSkipped
 	case StateSuccess:
-		if s.HasPerson || s.HasAnimal {
+		if s.HasPerson || s.HasAnimal || s.HasVehicle {
 			return "detected"
 		}
 		return "none"

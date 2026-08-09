@@ -23,14 +23,29 @@ type VideoEnqueuer interface {
 	Enqueue(videoPath string) bool
 }
 
+// FileIndexer receives stored file paths for local metadata indexing.
+type FileIndexer interface {
+	UpsertPath(path string) error
+}
+
+// StorageFaultHandler is called when the backing storage appears unavailable.
+type StorageFaultHandler func(error)
+
 // New constructs an SMTP server configured for local authenticated capture.
-func New(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnqueuer VideoEnqueuer) (*smtp.Server, error) {
+func New(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnqueuer VideoEnqueuer, fileIndexer FileIndexer) (*smtp.Server, error) {
+	return NewWithStorageFaultHandler(cfg, store, logger, videoEnqueuer, fileIndexer, nil)
+}
+
+// NewWithStorageFaultHandler constructs an SMTP server with a fatal storage fault callback.
+func NewWithStorageFaultHandler(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnqueuer VideoEnqueuer, fileIndexer FileIndexer, storageFaultHandler StorageFaultHandler) (*smtp.Server, error) {
 	backend := &backend{
-		users:         cfg.UserMap(),
-		store:         store,
-		logger:        logger,
-		verbose:       cfg.VerboseLogs,
-		videoEnqueuer: videoEnqueuer,
+		users:               cfg.UserMap(),
+		store:               store,
+		logger:              logger,
+		verbose:             cfg.VerboseLogs,
+		videoEnqueuer:       videoEnqueuer,
+		fileIndexer:         fileIndexer,
+		storageFaultHandler: storageFaultHandler,
 	}
 
 	srv := smtp.NewServer(backend)
@@ -54,12 +69,14 @@ func New(cfg *config.Config, store *storage.Store, logger *slog.Logger, videoEnq
 }
 
 type backend struct {
-	users         map[string]string
-	store         *storage.Store
-	logger        *slog.Logger
-	verbose       bool
-	videoEnqueuer VideoEnqueuer
-	nextConnID    atomic.Uint64
+	users               map[string]string
+	store               *storage.Store
+	logger              *slog.Logger
+	verbose             bool
+	videoEnqueuer       VideoEnqueuer
+	fileIndexer         FileIndexer
+	storageFaultHandler StorageFaultHandler
+	nextConnID          atomic.Uint64
 }
 
 func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
@@ -89,29 +106,38 @@ type session struct {
 }
 
 func (s *session) AuthMechanisms() []string {
-	return []string{sasl.Plain}
+	return []string{sasl.Plain, sasl.Login}
 }
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	s.vlog("auth mechanism requested", "mechanism", mech)
-	if !strings.EqualFold(mech, sasl.Plain) {
+	switch {
+	case strings.EqualFold(mech, sasl.Plain):
+		return sasl.NewPlainServer(func(identity, username, password string) error {
+			return s.authenticate(mech, username, password)
+		}), nil
+	case strings.EqualFold(mech, sasl.Login):
+		return newLoginServer(func(username, password string) error {
+			return s.authenticate(mech, username, password)
+		}), nil
+	default:
 		s.vlog("auth failed", "mechanism", mech, "reason", "unknown-mechanism")
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
+}
 
-	return sasl.NewPlainServer(func(identity, username, password string) error {
-		normalizedUser := strings.ToLower(strings.TrimSpace(username))
-		storedPassword, ok := s.backend.users[normalizedUser]
-		if !ok || storedPassword != password {
-			s.vlog("auth failed", "mechanism", mech, "username", normalizedUser, "reason", "bad-credentials")
-			return smtp.ErrAuthFailed
-		}
+func (s *session) authenticate(mech, username, password string) error {
+	normalizedUser := strings.ToLower(strings.TrimSpace(username))
+	storedPassword, ok := s.backend.users[normalizedUser]
+	if !ok || storedPassword != password {
+		s.vlog("auth failed", "mechanism", mech, "username", normalizedUser, "reason", "bad-credentials")
+		return smtp.ErrAuthFailed
+	}
 
-		s.authenticated = true
-		s.username = normalizedUser
-		s.vlog("auth succeeded", "mechanism", mech, "username", normalizedUser)
-		return nil
-	}), nil
+	s.authenticated = true
+	s.username = normalizedUser
+	s.vlog("auth succeeded", "mechanism", mech, "username", normalizedUser)
+	return nil
 }
 
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
@@ -170,6 +196,10 @@ func (s *session) Data(r io.Reader) error {
 			return smtpErr
 		}
 		s.backend.logger.Error("failed to store message", "error", err, "from", s.from, "auth_user", s.username)
+		if storage.IsUnavailableError(err) && s.backend.storageFaultHandler != nil {
+			s.backend.storageFaultHandler(err)
+			return &smtp.SMTPError{Code: 451, Message: "storage temporarily unavailable"}
+		}
 		return &smtp.SMTPError{Code: 554, Message: "failed to process message"}
 	}
 
@@ -184,6 +214,16 @@ func (s *session) Data(r io.Reader) error {
 	if s.backend.videoEnqueuer != nil {
 		for _, attachmentPath := range result.AttachmentPaths {
 			s.backend.videoEnqueuer.Enqueue(attachmentPath)
+		}
+	}
+	if s.backend.fileIndexer != nil {
+		if err := s.backend.fileIndexer.UpsertPath(result.BodyPath); err != nil {
+			s.backend.logger.Warn("failed indexing stored body", "path", result.BodyPath, "error", err)
+		}
+		for _, attachmentPath := range result.AttachmentPaths {
+			if err := s.backend.fileIndexer.UpsertPath(attachmentPath); err != nil {
+				s.backend.logger.Warn("failed indexing stored attachment", "path", attachmentPath, "error", err)
+			}
 		}
 	}
 

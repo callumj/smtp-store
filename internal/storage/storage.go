@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -36,6 +37,65 @@ type Result struct {
 // New creates a disk-backed storage writer.
 func New(root string) *Store {
 	return &Store{root: root}
+}
+
+// CheckWritable verifies the storage root is writable from the current process namespace.
+func CheckWritable(root string) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("create storage root: %w", err)
+	}
+	file, err := os.CreateTemp(root, ".smtp-store-health-*")
+	if err != nil {
+		return fmt.Errorf("create storage health file: %w", err)
+	}
+	name := file.Name()
+	if _, err := file.WriteString("ok\n"); err != nil {
+		_ = file.Close()
+		_ = os.Remove(name)
+		return fmt.Errorf("write storage health file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("close storage health file: %w", err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove storage health file: %w", err)
+	}
+	return nil
+}
+
+// IsUnavailableError reports whether an error indicates the backing storage is not usable.
+func IsUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	for _, target := range []error{
+		syscall.EROFS,
+		syscall.ESTALE,
+		syscall.ENOTCONN,
+		syscall.ENODEV,
+		syscall.ENXIO,
+		syscall.EHOSTDOWN,
+		syscall.EHOSTUNREACH,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+
+	message := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"read-only file system",
+		"stale file handle",
+		"transport endpoint is not connected",
+		"host is down",
+		"no route to host",
+	} {
+		if strings.Contains(message, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProcessAndStore parses a message and writes body+attachments to disk.

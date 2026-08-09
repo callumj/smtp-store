@@ -192,6 +192,12 @@ th {
   color: #ffd9a0;
 }
 
+.badge-vehicle {
+  background: rgba(120, 210, 255, 0.2);
+  border-color: rgba(120, 210, 255, 0.5);
+  color: #c8f0ff;
+}
+
 .badge-state {
   background: rgba(255, 255, 255, 0.1);
   border-color: rgba(255, 255, 255, 0.3);

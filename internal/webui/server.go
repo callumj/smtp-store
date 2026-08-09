@@ -27,6 +27,7 @@ import (
 
 	"smtp-store/internal/classify"
 	"smtp-store/internal/config"
+	"smtp-store/internal/fileindex"
 )
 
 const (
@@ -46,9 +47,11 @@ type app struct {
 	uiUsers       map[string]string
 	sessionSecret []byte
 	sessionTTL    time.Duration
+	mediaToken    string
 	verbose       bool
 	logger        *slog.Logger
 	templates     *template.Template
+	index         *fileindex.Index
 }
 
 type recipientEntry struct {
@@ -64,6 +67,7 @@ type recentItem struct {
 	Modified     string
 	HasPerson    bool
 	HasAnimal    bool
+	HasVehicle   bool
 	DetectState  string
 	DetectLabels []string
 	ViewURL      string
@@ -78,6 +82,7 @@ type browseEntry struct {
 	Modified     string
 	HasPerson    bool
 	HasAnimal    bool
+	HasVehicle   bool
 	DetectState  string
 	DetectLabels []string
 	BrowseURL    string
@@ -135,7 +140,12 @@ type binaryViewPageData struct {
 
 // New creates an HTTP server for browsing captured SMTP content.
 func New(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
-	h, err := NewHandler(cfg, logger)
+	return NewWithIndex(cfg, logger, nil)
+}
+
+// NewWithIndex creates an HTTP server with an optional metadata index.
+func NewWithIndex(cfg *config.Config, logger *slog.Logger, index *fileindex.Index) (*http.Server, error) {
+	h, err := NewHandlerWithIndex(cfg, logger, index)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +161,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 
 // NewHandler creates the UI HTTP handler.
 func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
+	return NewHandlerWithIndex(cfg, logger, nil)
+}
+
+// NewHandlerWithIndex creates the UI HTTP handler with an optional metadata index.
+func NewHandlerWithIndex(cfg *config.Config, logger *slog.Logger, index *fileindex.Index) (http.Handler, error) {
 	templates, err := template.New("ui").ParseFS(webAssets, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse UI templates: %w", err)
@@ -166,9 +181,11 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 		uiUsers:       cfg.UIUserMap(),
 		sessionSecret: []byte(cfg.Web.SessionSecret),
 		sessionTTL:    cfg.WebSessionTTLDuration(),
+		mediaToken:    cfg.MQTT.MediaToken,
 		verbose:       cfg.VerboseLogs,
 		logger:        logger,
 		templates:     templates,
+		index:         index,
 	}
 
 	mux := http.NewServeMux()
@@ -184,9 +201,56 @@ func NewHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 	mux.Handle("/browse", a.requireAuth(http.HandlerFunc(a.handleBrowseRootRedirect)))
 	mux.Handle("/view/", a.requireAuth(http.HandlerFunc(a.handleView)))
 	mux.Handle("/download/", a.requireAuth(http.HandlerFunc(a.handleDownload)))
+	mux.HandleFunc("/media/", a.handleMedia)
 	mux.Handle("/", a.requireAuth(http.HandlerFunc(a.handleDashboard)))
 
 	return mux, nil
+}
+
+func (a *app) handleMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if strings.TrimSpace(a.mediaToken) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	provided := r.URL.Query().Get("token")
+	if !hmac.Equal([]byte(provided), []byte(a.mediaToken)) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	_, absPath, err := a.resolvePathFromRequest(r, "/media/")
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "failed to stat file", http.StatusInternalServerError)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "directories cannot be served", http.StatusBadRequest)
+		return
+	}
+
+	contentType, err := detectContentType(absPath)
+	if err != nil {
+		http.Error(w, "failed to detect file type", http.StatusInternalServerError)
+		return
+	}
+	disposition := mime.FormatMediaType("inline", map[string]string{"filename": info.Name()})
+	w.Header().Set("Content-Disposition", disposition)
+	w.Header().Set("Content-Type", contentType)
+	http.ServeFile(w, r, absPath)
 }
 
 func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -347,7 +411,7 @@ func (a *app) handleBrowse(w http.ResponseWriter, r *http.Request) {
 			item.Size = "-"
 		} else {
 			item.Size = humanSize(entryInfo.Size())
-			item.DetectState, item.HasPerson, item.HasAnimal, item.DetectLabels = a.detectionSummaryForFile(filepath.Join(absPath, entry.Name()))
+			item.DetectState, item.HasPerson, item.HasAnimal, item.HasVehicle, item.DetectLabels = a.detectionSummaryForFile(filepath.Join(absPath, entry.Name()))
 			item.ViewURL = "/view/" + escapeRelPath(childRel)
 			item.DownloadURL = "/download/" + escapeRelPath(childRel)
 		}
@@ -610,6 +674,21 @@ func (a *app) resolvePathFromRequest(r *http.Request, prefix string) (relSlash, 
 }
 
 func (a *app) listRecipients() ([]recipientEntry, error) {
+	if a.index != nil {
+		names, err := a.index.Recipients()
+		if err != nil {
+			return nil, err
+		}
+		recipients := make([]recipientEntry, 0, len(names))
+		for _, name := range names {
+			recipients = append(recipients, recipientEntry{
+				Name:      name,
+				BrowseURL: "/browse/" + escapeRelPath(name),
+			})
+		}
+		return recipients, nil
+	}
+
 	entries, err := os.ReadDir(a.rootAbs)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -640,6 +719,31 @@ func (a *app) listRecentFiles(limit int) ([]recentItem, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
+	if a.index != nil {
+		files, err := a.index.Recent(limit)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]recentItem, 0, len(files))
+		for _, f := range files {
+			items = append(items, recentItem{
+				Name:         f.Name,
+				Recipient:    f.Recipient,
+				Relative:     f.RelativePath,
+				Size:         humanSize(f.Size),
+				Modified:     f.ModTime.Local().Format("2006-01-02 15:04:05"),
+				DetectState:  f.DetectState,
+				HasPerson:    f.HasPerson,
+				HasAnimal:    f.HasAnimal,
+				HasVehicle:   f.HasVehicle,
+				DetectLabels: f.DetectLabels,
+				ViewURL:      "/view/" + escapeRelPath(f.RelativePath),
+				DownloadURL:  "/download/" + escapeRelPath(f.RelativePath),
+			})
+		}
+		return items, nil
+	}
+
 	if _, err := os.Stat(a.rootAbs); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -703,7 +807,7 @@ func (a *app) listRecentFiles(limit int) ([]recentItem, error) {
 		if len(parts) > 0 {
 			recipient = parts[0]
 		}
-		detectState, hasPerson, hasAnimal, detectLabels := a.detectionSummaryForFile(c.path)
+		detectState, hasPerson, hasAnimal, hasVehicle, detectLabels := a.detectionSummaryForFile(c.path)
 		items = append(items, recentItem{
 			Name:         filepath.Base(c.path),
 			Recipient:    recipient,
@@ -713,6 +817,7 @@ func (a *app) listRecentFiles(limit int) ([]recentItem, error) {
 			DetectState:  detectState,
 			HasPerson:    hasPerson,
 			HasAnimal:    hasAnimal,
+			HasVehicle:   hasVehicle,
 			DetectLabels: detectLabels,
 			ViewURL:      "/view/" + escapeRelPath(c.rel),
 			DownloadURL:  "/download/" + escapeRelPath(c.rel),
@@ -814,15 +919,15 @@ func remoteAddr(r *http.Request) string {
 	return host
 }
 
-func (a *app) detectionSummaryForFile(filePath string) (state string, hasPerson, hasAnimal bool, labels []string) {
+func (a *app) detectionSummaryForFile(filePath string) (state string, hasPerson, hasAnimal, hasVehicle bool, labels []string) {
 	if !classify.IsVideoPath(filePath) {
-		return "", false, false, nil
+		return "", false, false, false, nil
 	}
 	sidecar, err := classify.LoadSidecar(filePath)
 	if err != nil {
-		return classify.StatePending, false, false, nil
+		return classify.StatePending, false, false, false, nil
 	}
-	return classify.DetectionStatus(sidecar), sidecar.HasPerson, sidecar.HasAnimal, detectionLabels(sidecar)
+	return classify.DetectionStatus(sidecar), sidecar.HasPerson, sidecar.HasAnimal, sidecar.HasVehicle, detectionLabels(sidecar)
 }
 
 func detectionLabels(sidecar *classify.Sidecar) []string {
@@ -854,7 +959,7 @@ func isGenericDetectionLabel(label, category string) bool {
 		return true
 	}
 	switch label {
-	case "person", "people", "human", "animal":
+	case "person", "people", "human", "animal", "vehicle", "car":
 		return true
 	default:
 		return false

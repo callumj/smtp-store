@@ -89,6 +89,9 @@ func TestBrowseAndViewEndpoints(t *testing.T) {
 	if !strings.Contains(browseBody, "fox") {
 		t.Fatalf("browse body missing raw detection label")
 	}
+	if !strings.Contains(browseBody, "Vehicle") {
+		t.Fatalf("browse body missing vehicle detection badge")
+	}
 
 	textViewURL := ts.URL + "/view/camera@local/2026/03/07/112321.txt"
 	textResp := doRequestNoRedirect(t, ts.Client(), http.MethodGet, textViewURL, nil, map[string]string{"Cookie": cookie.String()})
@@ -135,6 +138,9 @@ func TestBrowseAndViewEndpoints(t *testing.T) {
 	if !strings.Contains(dashBody, "fox") {
 		t.Fatalf("dashboard missing raw detection label")
 	}
+	if !strings.Contains(dashBody, "Vehicle") {
+		t.Fatalf("dashboard missing vehicle detection badge")
+	}
 
 	_ = root
 }
@@ -155,6 +161,32 @@ func TestPathTraversalBlocked(t *testing.T) {
 			t.Fatalf("path %q status = %d, want %d", p, resp.StatusCode, http.StatusBadRequest)
 		}
 	}
+}
+
+func TestMediaEndpointRequiresTokenAndBlocksTraversal(t *testing.T) {
+	t.Parallel()
+	ts, _ := startTestUIServer(t, "1h")
+
+	okResp := doRequestNoRedirect(t, ts.Client(), http.MethodGet, ts.URL+"/media/camera@local/2026/03/07/112321_1.mp4?token=test-media-token", nil, nil)
+	if okResp.StatusCode != http.StatusOK {
+		t.Fatalf("media status = %d, want %d", okResp.StatusCode, http.StatusOK)
+	}
+	if !strings.Contains(strings.ToLower(okResp.Header.Get("Content-Disposition")), "inline") {
+		t.Fatalf("media should set inline disposition")
+	}
+	_ = readBody(t, okResp)
+
+	badTokenResp := doRequestNoRedirect(t, ts.Client(), http.MethodGet, ts.URL+"/media/camera@local/2026/03/07/112321_1.mp4?token=wrong", nil, nil)
+	if badTokenResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("bad token media status = %d, want %d", badTokenResp.StatusCode, http.StatusForbidden)
+	}
+	_ = readBody(t, badTokenResp)
+
+	traversalResp := doRequestNoRedirect(t, ts.Client(), http.MethodGet, ts.URL+"/media/%2e%2e/%2e%2e/etc/passwd?token=test-media-token", nil, nil)
+	if traversalResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("traversal media status = %d, want %d", traversalResp.StatusCode, http.StatusBadRequest)
+	}
+	_ = readBody(t, traversalResp)
 }
 
 func TestDetectionStatesRendered(t *testing.T) {
@@ -201,9 +233,11 @@ func startTestUIServer(t *testing.T, sessionTTL string) (*httptest.Server, strin
 		Model:         "gemini-test",
 		HasPerson:     true,
 		HasAnimal:     true,
+		HasVehicle:    true,
 		Detections: []classify.Detection{
 			{Category: "person", Label: "person", Confidence: 0.92},
 			{Category: "animal", Label: "fox", Confidence: 0.84},
+			{Category: "vehicle", Label: "car", Confidence: 0.91},
 		},
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -253,6 +287,9 @@ func startTestUIServer(t *testing.T, sessionTTL string) (*httptest.Server, strin
 			ListenAddr:    "127.0.0.1:0",
 			SessionTTL:    sessionTTL,
 			SessionSecret: "test-session-secret",
+		},
+		MQTT: config.MQTTConfig{
+			MediaToken: "test-media-token",
 		},
 		Users: []config.UserCreds{{
 			Username: "camera",

@@ -34,9 +34,20 @@ var normalizeCategoryKeywords = map[string][]string{
 		"bird",
 		"raccoon",
 	},
+	"vehicle": {
+		"vehicle",
+		"car",
+		"truck",
+		"van",
+		"suv",
+		"bus",
+		"motorcycle",
+		"bicycle",
+		"bike",
+	},
 }
 
-var normalizeCategoryOrder = []string{"person", "animal"}
+var normalizeCategoryOrder = []string{"person", "animal", "vehicle"}
 
 // Service runs asynchronous video classification and sidecar persistence.
 type Service struct {
@@ -53,12 +64,29 @@ type Service struct {
 	verbose        bool
 	logger         *slog.Logger
 	retryBackoff   func(attempt int) time.Duration
+	notifier       NotificationPublisher
+	indexer        MetadataIndexer
 
-	queue  chan string
+	queue  chan job
 	queued map[string]struct{}
 	mu     sync.Mutex
 
 	ffmpegMissingWarned atomic.Bool
+}
+
+type job struct {
+	videoPath string
+	notify    bool
+}
+
+// SetNotificationPublisher configures an optional external publisher for successful detections.
+func (s *Service) SetNotificationPublisher(notifier NotificationPublisher) {
+	s.notifier = notifier
+}
+
+// SetMetadataIndexer configures optional local metadata indexing for sidecar updates.
+func (s *Service) SetMetadataIndexer(indexer MetadataIndexer) {
+	s.indexer = indexer
 }
 
 // NewService creates classification service from config.
@@ -89,7 +117,7 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 		retryBackoff: func(attempt int) time.Duration {
 			return time.Duration(attempt*attempt) * time.Second
 		},
-		queue:  make(chan string, queueSize),
+		queue:  make(chan job, queueSize),
 		queued: make(map[string]struct{}),
 	}, nil
 }
@@ -133,7 +161,7 @@ func (s *Service) Enqueue(videoPath string) bool {
 	s.mu.Unlock()
 
 	select {
-	case s.queue <- abs:
+	case s.queue <- job{videoPath: abs, notify: true}:
 		return true
 	default:
 		s.mu.Lock()
@@ -149,20 +177,21 @@ func (s *Service) worker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case videoPath := <-s.queue:
-			s.processWithRetry(ctx, videoPath)
+		case job := <-s.queue:
+			s.processWithRetry(ctx, job.videoPath, job.notify)
 			s.mu.Lock()
-			delete(s.queued, videoPath)
+			delete(s.queued, job.videoPath)
 			s.mu.Unlock()
 		}
 	}
 }
 
-func (s *Service) processWithRetry(ctx context.Context, videoPath string) {
+func (s *Service) processWithRetry(ctx context.Context, videoPath string, publishNotifications bool) {
 	base := sidecarForVideo(s.storageRootAbs, videoPath, s.provider.Name(), s.model)
 	base.State = StatePending
 	base.Attempts = 0
 	_ = WriteSidecar(videoPath, base)
+	s.indexSidecar(videoPath, base)
 
 	var lastErr error
 	attempts := s.retryMax + 1
@@ -178,6 +207,7 @@ func (s *Service) processWithRetry(ctx context.Context, videoPath string) {
 		sidecar.State = StatePending
 		sidecar.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		_ = WriteSidecar(videoPath, sidecar)
+		s.indexSidecar(videoPath, sidecar)
 
 		frames, err := s.extractor.ExtractFrames(ctx, videoPath, s.frameCount)
 		if err != nil {
@@ -187,6 +217,7 @@ func (s *Service) processWithRetry(ctx context.Context, videoPath string) {
 				sidecar.LastError = err.Error()
 				sidecar.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 				_ = WriteSidecar(videoPath, sidecar)
+				s.indexSidecar(videoPath, sidecar)
 				return
 			}
 			lastErr = err
@@ -201,6 +232,14 @@ func (s *Service) processWithRetry(ctx context.Context, videoPath string) {
 				sidecar.Detections = normalized
 				sidecar.HasPerson = hasCategory(normalized, "person")
 				sidecar.HasAnimal = hasCategory(normalized, "animal")
+				sidecar.HasVehicle = hasCategory(normalized, "vehicle")
+				if len(frames) > 0 {
+					if thumbRel, err := s.writeThumbnail(videoPath, frames[0]); err != nil {
+						s.logger.Warn("failed writing classification thumbnail", "video_path", videoPath, "error", err)
+					} else {
+						sidecar.ThumbnailPath = thumbRel
+					}
+				}
 				if s.storeRaw {
 					sidecar.RawResponse = resp.RawResponse
 				}
@@ -208,8 +247,24 @@ func (s *Service) processWithRetry(ctx context.Context, videoPath string) {
 				if err := WriteSidecar(videoPath, sidecar); err != nil {
 					s.logger.Error("failed writing classification sidecar", "video_path", videoPath, "error", err)
 				}
+				s.indexSidecar(videoPath, sidecar)
+				if publishNotifications && s.notifier != nil {
+					if err := s.notifier.PublishClassification(ctx, videoPath, sidecar); err != nil {
+						sidecar.MQTTLastError = err.Error()
+						sidecar.MQTTPublishedAt = ""
+						s.logger.Warn("failed publishing classification notification", "video_path", videoPath, "error", err)
+					} else {
+						sidecar.MQTTLastError = ""
+						sidecar.MQTTPublishedAt = time.Now().UTC().Format(time.RFC3339)
+					}
+					sidecar.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+					if err := WriteSidecar(videoPath, sidecar); err != nil {
+						s.logger.Error("failed writing classification sidecar after notification", "video_path", videoPath, "error", err)
+					}
+					s.indexSidecar(videoPath, sidecar)
+				}
 				if s.verbose {
-					s.logger.Info("video classification completed", "video_path", videoPath, "detections", len(normalized), "has_person", sidecar.HasPerson, "has_animal", sidecar.HasAnimal)
+					s.logger.Info("video classification completed", "video_path", videoPath, "detections", len(normalized), "has_person", sidecar.HasPerson, "has_animal", sidecar.HasAnimal, "has_vehicle", sidecar.HasVehicle)
 				}
 				return
 			}
@@ -238,7 +293,32 @@ func (s *Service) processWithRetry(ctx context.Context, videoPath string) {
 	if err := WriteSidecar(videoPath, failed); err != nil {
 		s.logger.Error("failed writing failed classification sidecar", "video_path", videoPath, "error", err)
 	}
+	s.indexSidecar(videoPath, failed)
 	s.logger.Warn("video classification failed", "video_path", videoPath, "error", lastErr)
+}
+
+func (s *Service) indexSidecar(videoPath string, sidecar Sidecar) {
+	if s.indexer == nil {
+		return
+	}
+	if err := s.indexer.UpsertSidecar(videoPath, sidecar); err != nil {
+		s.logger.Warn("failed updating file index sidecar metadata", "video_path", videoPath, "error", err)
+	}
+}
+
+func (s *Service) writeThumbnail(videoPath string, payload []byte) (string, error) {
+	if len(payload) == 0 {
+		return "", errors.New("empty thumbnail payload")
+	}
+	thumbPath := videoPath + ".thumb.jpg"
+	if err := os.WriteFile(thumbPath, payload, 0o644); err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(s.storageRootAbs, thumbPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(rel), nil
 }
 
 func (s *Service) logFFmpegMissing(videoPath string) {
@@ -272,7 +352,7 @@ func (s *Service) backfill(ctx context.Context, now time.Time) {
 		}
 
 		if sc, err := LoadSidecar(path); err == nil {
-			if sc.State == StateSuccess {
+			if sc.State == StateSuccess && sc.SchemaVersion >= SchemaVersion {
 				return nil
 			}
 		}
@@ -281,10 +361,42 @@ func (s *Service) backfill(ctx context.Context, now time.Time) {
 		case <-ctx.Done():
 			return context.Canceled
 		default:
-			s.Enqueue(path)
+			s.enqueueBackfill(path)
 			return nil
 		}
 	})
+}
+
+func (s *Service) enqueueBackfill(videoPath string) bool {
+	if !IsVideoPath(videoPath) || IsDetectionSidecarPath(videoPath) {
+		return false
+	}
+	abs, err := filepath.Abs(videoPath)
+	if err != nil {
+		return false
+	}
+	if abs != s.storageRootAbs && !strings.HasPrefix(abs, s.storageRootAbs+string(os.PathSeparator)) {
+		return false
+	}
+
+	s.mu.Lock()
+	if _, exists := s.queued[abs]; exists {
+		s.mu.Unlock()
+		return false
+	}
+	s.queued[abs] = struct{}{}
+	s.mu.Unlock()
+
+	select {
+	case s.queue <- job{videoPath: abs, notify: false}:
+		return true
+	default:
+		s.mu.Lock()
+		delete(s.queued, abs)
+		s.mu.Unlock()
+		s.logger.Warn("classification queue full; dropping backfill video", "video_path", abs)
+		return false
+	}
 }
 
 func normalizeDetections(in []Detection, threshold float64) []Detection {

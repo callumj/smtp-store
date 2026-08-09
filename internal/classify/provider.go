@@ -24,3 +24,13 @@ type Provider interface {
 type FrameExtractor interface {
 	ExtractFrames(ctx context.Context, videoPath string, frameCount int) ([][]byte, error)
 }
+
+// NotificationPublisher publishes successful classification metadata to external systems.
+type NotificationPublisher interface {
+	PublishClassification(ctx context.Context, videoPath string, sidecar Sidecar) error
+}
+
+// MetadataIndexer updates local file metadata after classification changes.
+type MetadataIndexer interface {
+	UpsertSidecar(videoPath string, sidecar Sidecar) error
+}

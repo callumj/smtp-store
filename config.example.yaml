@@ -1,5 +1,6 @@
 listen_addr: 127.0.0.1:2525
 storage_root: ./data
+index_path: ./smtp-store-index.sqlite
 hostname: localhost
 verbose_logs: false
 
@@ -19,6 +20,24 @@ classification:
   backfill_window: 168h
   retry_max: 3
   store_raw_response: true
+
+mqtt:
+  enabled: false
+  host: 192.168.52.57
+  port: 1883
+  username: ""
+  password: ""
+  client_id: smtp-store
+  topic_prefix: smtp-store
+  discovery_prefix: homeassistant
+  qos: 1
+  motion_reset_after: 60s
+  public_base_url: https://smtp-store.lake.jonesswimclub.com
+  media_token: change-this-long-random-media-token
+  notify_categories:
+    - person
+    - animal
+    - vehicle
 
 tls:
   enabled: false

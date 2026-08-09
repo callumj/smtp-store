@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -159,5 +161,33 @@ func TestProcessAndStoreCollisionHandling(t *testing.T) {
 	}
 	if _, err := os.Stat(second.BodyPath); err != nil {
 		t.Fatalf("missing second body file: %v", err)
+	}
+}
+
+func TestCheckWritable(t *testing.T) {
+	t.Parallel()
+
+	if err := CheckWritable(t.TempDir()); err != nil {
+		t.Fatalf("CheckWritable() error = %v", err)
+	}
+}
+
+func TestIsUnavailableError(t *testing.T) {
+	t.Parallel()
+
+	cases := []error{
+		fmt.Errorf("create output dir: %w", syscall.EROFS),
+		fmt.Errorf("write attachment: read-only file system"),
+		fmt.Errorf("create storage health file: stale file handle"),
+		fmt.Errorf("create storage health file: transport endpoint is not connected"),
+	}
+	for _, err := range cases {
+		if !IsUnavailableError(err) {
+			t.Fatalf("IsUnavailableError(%v) = false, want true", err)
+		}
+	}
+
+	if IsUnavailableError(fmt.Errorf("parse MIME message: bad header")) {
+		t.Fatal("IsUnavailableError() returned true for parse error")
 	}
 }

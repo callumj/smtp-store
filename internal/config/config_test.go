@@ -56,11 +56,69 @@ users:
 	if !cfg.ClassificationStoreRawResponseEnabled() {
 		t.Fatal("expected raw response storage to default true")
 	}
+	if cfg.MQTTEnabled() {
+		t.Fatal("expected mqtt to default disabled")
+	}
+	if cfg.MQTT.Port != 1883 {
+		t.Fatalf("unexpected default mqtt port: %d", cfg.MQTT.Port)
+	}
+	if cfg.MQTT.TopicPrefix != "smtp-store" {
+		t.Fatalf("unexpected default mqtt topic prefix: %q", cfg.MQTT.TopicPrefix)
+	}
 	if got := cfg.UserMap()["camera"]; got != "secret" {
 		t.Fatalf("unexpected user map password: %q", got)
 	}
 	if got := cfg.UIUserMap()["ui"]; got != "ui-secret" {
 		t.Fatalf("unexpected ui user map password: %q", got)
+	}
+}
+
+func TestLoadValidatesEnabledMQTT(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	writeFile(t, configPath, `storage_root: ./captures
+users:
+  - username: camera
+    password: secret
+mqtt:
+  enabled: true
+  host: 192.168.52.57
+  public_base_url: https://smtp-store.lake.jonesswimclub.com
+  media_token: test-token
+`+requiredConfigBlock)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.MQTTEnabled() {
+		t.Fatal("expected mqtt enabled")
+	}
+	if cfg.MQTTMotionResetAfterDuration().String() != "1m0s" {
+		t.Fatalf("unexpected mqtt motion reset: %s", cfg.MQTTMotionResetAfterDuration())
+	}
+}
+
+func TestLoadFailsWithEnabledMQTTMissingToken(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	writeFile(t, configPath, `storage_root: ./captures
+users:
+  - username: camera
+    password: secret
+mqtt:
+  enabled: true
+  host: 192.168.52.57
+  public_base_url: https://smtp-store.lake.jonesswimclub.com
+`+requiredConfigBlock)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected mqtt media token validation error")
 	}
 }
 

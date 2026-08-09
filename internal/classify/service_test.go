@@ -41,6 +41,20 @@ func (m *mockProvider) ClassifyVideo(_ context.Context, req ProviderRequest) (Pr
 	return m.fn()
 }
 
+type mockNotifier struct {
+	calls   atomic.Int32
+	lastVid string
+	last    Sidecar
+	err     error
+}
+
+func (m *mockNotifier) PublishClassification(_ context.Context, videoPath string, sidecar Sidecar) error {
+	m.calls.Add(1)
+	m.lastVid = videoPath
+	m.last = sidecar
+	return m.err
+}
+
 func TestSidecarReadWriteAndStatus(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -86,6 +100,7 @@ func TestProcessWithRetryStoresSuccessAndFiltersDetections(t *testing.T) {
 			RawResponse: `{"detections":[...]}`,
 		}, nil
 	}}
+	notifier := &mockNotifier{}
 
 	svc := &Service{
 		storageRootAbs: root,
@@ -100,11 +115,12 @@ func TestProcessWithRetryStoresSuccessAndFiltersDetections(t *testing.T) {
 		storeRaw:       true,
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		retryBackoff:   func(_ int) time.Duration { return 0 },
-		queue:          make(chan string, queueSize),
+		notifier:       notifier,
+		queue:          make(chan job, queueSize),
 		queued:         make(map[string]struct{}),
 	}
 
-	svc.processWithRetry(context.Background(), video)
+	svc.processWithRetry(context.Background(), video, true)
 
 	sidecar, err := LoadSidecar(video)
 	if err != nil {
@@ -113,14 +129,26 @@ func TestProcessWithRetryStoresSuccessAndFiltersDetections(t *testing.T) {
 	if sidecar.State != StateSuccess {
 		t.Fatalf("state = %q, want %q", sidecar.State, StateSuccess)
 	}
-	if !sidecar.HasPerson || !sidecar.HasAnimal {
-		t.Fatalf("expected person+animal true, got person=%v animal=%v", sidecar.HasPerson, sidecar.HasAnimal)
+	if !sidecar.HasPerson || !sidecar.HasAnimal || !sidecar.HasVehicle {
+		t.Fatalf("expected person+animal+vehicle true, got person=%v animal=%v vehicle=%v", sidecar.HasPerson, sidecar.HasAnimal, sidecar.HasVehicle)
 	}
-	if len(sidecar.Detections) != 2 {
-		t.Fatalf("detections = %d, want 2", len(sidecar.Detections))
+	if len(sidecar.Detections) != 3 {
+		t.Fatalf("detections = %d, want 3", len(sidecar.Detections))
 	}
 	if sidecar.RawResponse == "" {
 		t.Fatal("expected raw response to be stored")
+	}
+	if sidecar.ThumbnailPath != "clip.mp4.thumb.jpg" {
+		t.Fatalf("thumbnail path = %q", sidecar.ThumbnailPath)
+	}
+	if _, err := os.Stat(filepath.Join(root, "clip.mp4.thumb.jpg")); err != nil {
+		t.Fatalf("expected thumbnail file: %v", err)
+	}
+	if notifier.calls.Load() != 1 {
+		t.Fatalf("notifier calls = %d, want 1", notifier.calls.Load())
+	}
+	if sidecar.MQTTPublishedAt == "" {
+		t.Fatal("expected mqtt published timestamp")
 	}
 }
 
@@ -154,11 +182,11 @@ func TestProcessWithRetryRetriesThenSucceeds(t *testing.T) {
 		storeRaw:       true,
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		retryBackoff:   func(_ int) time.Duration { return 0 },
-		queue:          make(chan string, queueSize),
+		queue:          make(chan job, queueSize),
 		queued:         make(map[string]struct{}),
 	}
 
-	svc.processWithRetry(context.Background(), video)
+	svc.processWithRetry(context.Background(), video, true)
 
 	sidecar, err := LoadSidecar(video)
 	if err != nil {
@@ -197,11 +225,11 @@ func TestProcessWithRetrySkipsWhenFFmpegMissing(t *testing.T) {
 		storeRaw:       true,
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		retryBackoff:   func(_ int) time.Duration { return 0 },
-		queue:          make(chan string, queueSize),
+		queue:          make(chan job, queueSize),
 		queued:         make(map[string]struct{}),
 	}
 
-	svc.processWithRetry(context.Background(), video)
+	svc.processWithRetry(context.Background(), video, true)
 
 	sidecar, err := LoadSidecar(video)
 	if err != nil {
@@ -250,7 +278,7 @@ func TestBackfillWindowSkipsOldAndSuccessful(t *testing.T) {
 		storeRaw:       true,
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		retryBackoff:   func(_ int) time.Duration { return 0 },
-		queue:          make(chan string, queueSize),
+		queue:          make(chan job, queueSize),
 		queued:         make(map[string]struct{}),
 	}
 
@@ -260,8 +288,11 @@ func TestBackfillWindowSkipsOldAndSuccessful(t *testing.T) {
 		t.Fatalf("queue len = %d, want 1", len(svc.queue))
 	}
 	enqueued := <-svc.queue
-	if filepath.Base(enqueued) != filepath.Base(newPending) {
-		t.Fatalf("unexpected enqueued file: %q", enqueued)
+	if filepath.Base(enqueued.videoPath) != filepath.Base(newPending) {
+		t.Fatalf("unexpected enqueued file: %q", enqueued.videoPath)
+	}
+	if enqueued.notify {
+		t.Fatal("backfill queue job should not publish notifications")
 	}
 }
 
@@ -287,7 +318,7 @@ func TestIntegrationIngestAndClassifyCreatesSidecar(t *testing.T) {
 		storeRaw:       true,
 		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		retryBackoff:   func(_ int) time.Duration { return 0 },
-		queue:          make(chan string, queueSize),
+		queue:          make(chan job, queueSize),
 		queued:         make(map[string]struct{}),
 	}
 

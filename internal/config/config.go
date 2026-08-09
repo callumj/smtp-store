@@ -20,22 +20,32 @@ const defaultClassificationWorkerConcurrency = 1
 const defaultClassificationFrameCount = 6
 const defaultClassificationBackfillWindow = "168h"
 const defaultClassificationRetryMax = 3
+const defaultMQTTPort = 1883
+const defaultMQTTClientID = "smtp-store"
+const defaultMQTTTopicPrefix = "smtp-store"
+const defaultMQTTDiscoveryPrefix = "homeassistant"
+const defaultMQTTQoS = 1
+const defaultMQTTMotionResetAfter = "60s"
 
 // Config is the runtime configuration for the SMTP capture service.
 type Config struct {
 	ListenAddr                      string               `yaml:"listen_addr"`
 	StorageRoot                     string               `yaml:"storage_root"`
+	IndexPath                       string               `yaml:"index_path"`
 	Hostname                        string               `yaml:"hostname"`
 	VerboseLogs                     bool                 `yaml:"verbose_logs"`
 	TLS                             TLSConfig            `yaml:"tls"`
 	Web                             WebConfig            `yaml:"web"`
 	Classification                  ClassificationConfig `yaml:"classification"`
+	MQTT                            MQTTConfig           `yaml:"mqtt"`
 	Users                           []UserCreds          `yaml:"users"`
 	UIUsers                         []UserCreds          `yaml:"ui_users"`
 	webSessionTTL                   time.Duration
 	classificationBackfillWindow    time.Duration
+	mqttMotionResetAfter            time.Duration
 	classificationEnabled           bool
 	classificationStoreRawResponses bool
+	mqttEnabled                     bool
 }
 
 // TLSConfig controls optional STARTTLS support.
@@ -64,6 +74,23 @@ type ClassificationConfig struct {
 	BackfillWindow      string  `yaml:"backfill_window"`
 	RetryMax            int     `yaml:"retry_max"`
 	StoreRawResponse    *bool   `yaml:"store_raw_response"`
+}
+
+// MQTTConfig controls Home Assistant MQTT discovery and event publishing.
+type MQTTConfig struct {
+	Enabled          *bool    `yaml:"enabled"`
+	Host             string   `yaml:"host"`
+	Port             int      `yaml:"port"`
+	Username         string   `yaml:"username"`
+	Password         string   `yaml:"password"`
+	ClientID         string   `yaml:"client_id"`
+	TopicPrefix      string   `yaml:"topic_prefix"`
+	DiscoveryPrefix  string   `yaml:"discovery_prefix"`
+	QoS              byte     `yaml:"qos"`
+	MotionResetAfter string   `yaml:"motion_reset_after"`
+	PublicBaseURL    string   `yaml:"public_base_url"`
+	MediaToken       string   `yaml:"media_token"`
+	NotifyCategories []string `yaml:"notify_categories"`
 }
 
 // UserCreds is a static local auth user.
@@ -103,6 +130,10 @@ func (c *Config) applyDefaults() {
 	if c.Classification.StoreRawResponse != nil {
 		c.classificationStoreRawResponses = *c.Classification.StoreRawResponse
 	}
+	c.mqttEnabled = false
+	if c.MQTT.Enabled != nil {
+		c.mqttEnabled = *c.MQTT.Enabled
+	}
 
 	if strings.TrimSpace(c.ListenAddr) == "" {
 		c.ListenAddr = defaultListenAddr
@@ -137,6 +168,27 @@ func (c *Config) applyDefaults() {
 			hostname = "localhost"
 		}
 		c.Hostname = hostname
+	}
+	if c.MQTT.Port == 0 {
+		c.MQTT.Port = defaultMQTTPort
+	}
+	if strings.TrimSpace(c.MQTT.ClientID) == "" {
+		c.MQTT.ClientID = defaultMQTTClientID
+	}
+	if strings.TrimSpace(c.MQTT.TopicPrefix) == "" {
+		c.MQTT.TopicPrefix = defaultMQTTTopicPrefix
+	}
+	if strings.TrimSpace(c.MQTT.DiscoveryPrefix) == "" {
+		c.MQTT.DiscoveryPrefix = defaultMQTTDiscoveryPrefix
+	}
+	if c.MQTT.QoS == 0 {
+		c.MQTT.QoS = defaultMQTTQoS
+	}
+	if strings.TrimSpace(c.MQTT.MotionResetAfter) == "" {
+		c.MQTT.MotionResetAfter = defaultMQTTMotionResetAfter
+	}
+	if len(c.MQTT.NotifyCategories) == 0 {
+		c.MQTT.NotifyCategories = []string{"person", "animal", "vehicle"}
 	}
 }
 
@@ -195,6 +247,38 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Classification.APIKey) == "" {
 			return errors.New("classification.api_key is required when classification.enabled=true")
 		}
+	}
+
+	mqttMotionResetAfter, err := time.ParseDuration(strings.TrimSpace(c.MQTT.MotionResetAfter))
+	if err != nil {
+		return fmt.Errorf("invalid mqtt.motion_reset_after: %w", err)
+	}
+	if mqttMotionResetAfter <= 0 {
+		return errors.New("mqtt.motion_reset_after must be > 0")
+	}
+	c.mqttMotionResetAfter = mqttMotionResetAfter
+	if c.MQTT.Port < 1 || c.MQTT.Port > 65535 {
+		return errors.New("mqtt.port must be between 1 and 65535")
+	}
+	if c.MQTT.QoS > 2 {
+		return errors.New("mqtt.qos must be 0, 1, or 2")
+	}
+	if c.mqttEnabled {
+		if strings.TrimSpace(c.MQTT.Host) == "" {
+			return errors.New("mqtt.host is required when mqtt.enabled=true")
+		}
+		if strings.TrimSpace(c.MQTT.PublicBaseURL) == "" {
+			return errors.New("mqtt.public_base_url is required when mqtt.enabled=true")
+		}
+		if strings.TrimSpace(c.MQTT.MediaToken) == "" {
+			return errors.New("mqtt.media_token is required when mqtt.enabled=true")
+		}
+	}
+	for i, category := range c.MQTT.NotifyCategories {
+		if strings.TrimSpace(category) == "" {
+			return fmt.Errorf("mqtt.notify_categories[%d] is required", i)
+		}
+		c.MQTT.NotifyCategories[i] = strings.ToLower(strings.TrimSpace(category))
 	}
 
 	seen := make(map[string]struct{}, len(c.Users))
@@ -293,4 +377,23 @@ func (c *Config) ClassificationBackfillWindowDuration() time.Duration {
 // ClassificationStoreRawResponseEnabled returns whether raw model output is persisted.
 func (c *Config) ClassificationStoreRawResponseEnabled() bool {
 	return c.classificationStoreRawResponses
+}
+
+// MQTTEnabled returns whether Home Assistant MQTT publishing should run.
+func (c *Config) MQTTEnabled() bool {
+	return c.mqttEnabled
+}
+
+// IndexEnabled reports whether the local metadata index should be used.
+func (c *Config) IndexEnabled() bool {
+	return strings.TrimSpace(c.IndexPath) != ""
+}
+
+// MQTTMotionResetAfterDuration returns parsed mqtt.motion_reset_after.
+func (c *Config) MQTTMotionResetAfterDuration() time.Duration {
+	if c.mqttMotionResetAfter > 0 {
+		return c.mqttMotionResetAfter
+	}
+	fallback, _ := time.ParseDuration(defaultMQTTMotionResetAfter)
+	return fallback
 }

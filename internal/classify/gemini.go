@@ -92,7 +92,7 @@ func (p *GeminiProvider) ClassifyVideo(ctx context.Context, req ProviderRequest)
 func (p *GeminiProvider) buildRequestPayload(frames [][]byte) ([]byte, error) {
 	parts := make([]map[string]any, 0, len(frames)+1)
 	parts = append(parts, map[string]any{
-		"text": "You are a detection classifier for security camera clips. Only identify people and animals. Respond ONLY as JSON with shape: {\"detections\":[{\"label\":\"string\",\"category\":\"person|animal\",\"confidence\":0-1}]}. If none, return {\"detections\":[]}.",
+		"text": "You are a detection classifier for security camera clips. Identify people, animals, and vehicles visible in any frame. Respond ONLY as JSON with shape: {\"detections\":[{\"label\":\"string\",\"category\":\"person|animal|vehicle\",\"confidence\":0-1}]}. Use category \"vehicle\" for cars, trucks, vans, SUVs, motorcycles, bicycles, and similar road vehicles. If none, return {\"detections\":[]}.",
 	})
 	for _, frame := range frames {
 		parts = append(parts, map[string]any{

@@ -13,6 +13,7 @@ cp config.example.yaml config.yaml
    - Set `verbose_logs: true` to log connection attempts, auth attempts, and message command flow.
    - Set a strong `web.session_secret` value.
    - Set `classification.api_key` for Gemini.
+   - Set `index_path` to a local-disk SQLite path when `storage_root` is a NAS/network mount.
 3. Start the server:
 
 ```bash
@@ -30,13 +31,53 @@ UI routes:
 - `/view/*path`
 - `/download/*path`
 
+Dashboard performance:
+- The web UI can maintain a local SQLite metadata index via `index_path`.
+- Keep `index_path` on local disk, for example `/var/lib/smtp-store/index.sqlite`, so dashboard recent-file queries do not recursively scan a network-mounted `storage_root`.
+- When `index_path` is empty, the UI falls back to walking `storage_root` on demand.
+
 Detection metadata:
-- Video attachments are asynchronously classified for person/animal detections.
+- Video attachments are asynchronously classified for person, animal, and vehicle detections.
 - Sidecars are stored as `<video_filename>.detections.json`.
-- UI tables show detection badges (`Person`, `Animal`) or states (`pending`, `failed`, `skipped`, `none`).
+- Thumbnails for successfully classified videos are stored as `<video_filename>.thumb.jpg`.
+- UI tables show detection badges (`Person`, `Animal`, `Vehicle`) or states (`pending`, `failed`, `skipped`, `none`).
 
 Dependencies for classification:
 - `ffmpeg` must be installed for frame sampling.
+
+## Home Assistant MQTT
+
+`smtp-store` can publish Home Assistant MQTT discovery, motion state, and detection events after classification.
+
+Example config:
+
+```yaml
+mqtt:
+  enabled: true
+  host: 192.168.52.57
+  port: 1883
+  username: ""
+  password: ""
+  client_id: smtp-store
+  topic_prefix: smtp-store
+  discovery_prefix: homeassistant
+  qos: 1
+  motion_reset_after: 60s
+  public_base_url: https://smtp-store.lake.jonesswimclub.com
+  media_token: change-this-long-random-media-token
+  notify_categories:
+    - person
+    - animal
+    - vehicle
+```
+
+Published topics:
+- `homeassistant/event/smtp_store_<camera>/config`
+- `homeassistant/binary_sensor/smtp_store_<camera>_motion/config`
+- `smtp-store/<camera>/event`
+- `smtp-store/<camera>/motion/state`
+
+Detection event payloads include `event_type`, `camera`, `detections`, `video_url`, `thumbnail_url`, and category flags such as `has_vehicle`. The thumbnail URL uses `/media/...?...token=...` so Home Assistant automations can pass it to mobile app notifications as an image attachment.
 
 ## Build
 
